@@ -6,65 +6,91 @@
 
 ---
 
-## ✨ Key Capabilities & Features
+## 🏛️ EchoBridge AI Intelligent Orchestrator Architecture
 
-### 1. ⚡ Instant Smart Meaning Translation
-- **Sub-Second Latency (< 100ms)** with local intent & neural translation pipeline.
-- **True Semantic Meaning Resolution**: Cultural phrases and conversational idioms are mapped to their true intent rather than literal loanword transliteration:
-  - `నమస్తే` / `Namaste` ➔ **"Hello"** *(in English)* | **"Hola"** *(in Spanish)* | **"नमस्ते"** *(in Hindi)*
-  - `తిన్నారా?` / `Tinnara?` ➔ **"Did you eat?"** *(in English)* | **"क्या आपने खाना खाया?"** *(in Hindi)* | **"¿Comiste?"** *(in Spanish)*
-  - `ధన్యవాదాలు` / `Danyavadalu` ➔ **"Thank you"**
-  - `ఎలా ఉన్నారు?` / `Ela unnaru?` ➔ **"How are you?"**
-- **Romanized Input Support**: Type Indian languages using English alphabets (e.g., `danyavadalu`, `bagunnara`), and EchoBridge AI automatically detects the source tongue and outputs the meaning.
+EchoBridge AI implements a **Hybrid AI Architecture** featuring a central decision engine that prioritizes low latency by decoupling unambiguous translations from contextual LLM resolution:
 
-### 2. 🔊 Speak & Translate (Smart Speaker Mode)
-- One-touch interactive voice interface: You speak into the microphone, and the AI speaker instantly understands the phrase, renders the translation, and **speaks it aloud in real-time** via speech synthesis.
-- Clear dual-card acoustic display:
-  - 🎤 **YOU SAID — Source Language (Native Script / Audio)**
-  - 🔊 **TRANSLATED RESPONSE — Selected Language (Instant Voice Readout)**
-
-### 3. 💬 Real-Time Two-Way Conversation Mode
-- Live split-channel dialogue designed for face-to-face interaction between two speakers (e.g., Doctor & Patient, Tourist & Local).
-- Automatic turn-taking with speaker attribution, instant bilingual transcription, and voice playback.
-
-### 4. 🧠 AI Smart Enhancements
-- **Tone Conversion**: Default, Formal, Casual, Professional, and Diplomatic.
-- **AI Sentence Explanation**: Word-by-word grammatical breakdowns, cultural context, and nuances.
-- **Alternative Translations**: View variations across casual, business, and idiom styles.
-- **Smart Grammar & Confidence Scoring**: Validates grammar and rates linguistic confidence.
-
-### 5. 📄 Document Translation
-- Drag-and-drop document translator supporting `.txt`, `.docx`, `.pdf`, `.md`, and `.json`.
-- Automatic layout preservation, word count tracking, and instant download of translated documents.
-
-### 6. 📊 Translation Analytics & Persistence
-- SQLite-backed history tracking with search, favorites, single-click copy, and `.txt` file export.
-- Live dashboard displaying total translations, languages used, voice minutes interpreted, and average latency.
+```mermaid
+flowchart TD
+    User([User Voice or Text Input]) --> Intelligence[Input Intelligence Layer\n- Script & Unicode Analysis\n- Romanized Indian Language Detection\n- Contextual Pronoun & Particle Recognition]
+    Intelligence --> Orchestrator{EchoBridge AI\nIntelligent Orchestrator}
+    
+    Orchestrator -->|Simple & Clear Inputs\nనమస్తే, ధన్యవాదాలు, తిన్నారా?, danyavadalu| FastPath[⚡ FAST PATH\nSub-Millisecond Semantic Engine\n~0.1ms to 30ms latency\nZero unnecessary LLM calls]
+    Orchestrator -->|Ambiguous / Contextual / Informal\nela unnav ra, Atanu + conversation context| IntelligentPath[🧠 INTELLIGENT PATH\nLLM Meaning & Context Resolution\nColloquial Particles & Pronoun Disambiguation]
+    
+    FastPath --> Output[Structured Meaning Output]
+    IntelligentPath --> Output
+    Output --> TTS[Speech Synthesis Spoken Aloud 🔊]
+    Output --> UI[Dual-Card Display: Left YOU SAID vs Right TRANSLATED RESPONSE]
+```
 
 ---
 
-## 🛠️ Architecture & Tech Stack
+## ✨ Key Capabilities & Features
 
-```mermaid
-graph TD
-    A[React 18 + Vite + Tailwind CSS Frontend] -->|REST / WebSocket| B[FastAPI Backend Server]
-    B --> C[Semantic Meaning Intent Engine]
-    B --> D[Neural GTX & OpenAI Hybrid Pipeline]
-    B --> E[SQLite Database translations.db]
-    A --> F[Web Speech API STT / TTS]
+### 1. ⚡ Hybrid Orchestration: Fast Path vs Intelligent Path
+- **FAST PATH ⚡ (Sub-Millisecond)**:
+  - Common conversational phrases and unambiguous inputs bypass LLMs completely.
+  - `నమస్తే` ➔ **"Hello"** (0.1ms)
+  - `ధన్యవాదాలు` ➔ **"Thank you"** (0.1ms)
+  - `తిన్నారా?` ➔ **"Did you eat?"** (0.1ms)
+  - `నీ పేరు ఏమిటి?` ➔ **"What is your name?"** (0.1ms)
+  - `danyavadalu` ➔ **"Thank you"** (0.5ms)
+- **INTELLIGENT PATH 🧠 (Context & LLM)**:
+  - Invoked strictly for ambiguous phrasing, informal markers, or dialogue context.
+  - `ela unnav ra` ➔ Detects informal Telugu particle `ra` ➔ **"How are you, bro?"**
+  - Conversation reference: Turn 1 *"Ravi repu office ki vastadu."* ➔ Turn 2 *"Atanu eppudu vastadu?"* ➔ **"When will he (Ravi) come?"**
+
+### 2. 🎯 True Meaning-Based Translation (NOT Transliteration)
+- Never confuses script conversion with meaning translation:
+  - Input: `నమస్తే` (Telugu) ➔ Target: English ➔ Output: **`"Hello"`** *(Never "Namaste")*
+  - Input: `తిన్నారా?` (Telugu) ➔ Target: English ➔ Output: **`"Did you eat?"`** *(Never "Tinnara?")*
+  - Input: `నమస్తే` (Telugu) ➔ Target: Spanish ➔ Output: **`"Hola"`**
+  - Input: `నమస్తే` (Telugu) ➔ Target: Hindi ➔ Output: **`"नमस्ते"`**
+
+### 3. 🔊 Speak & Translate (Smart Speaker Mode)
+- Interactive voice interface with speech recognition: Speak in Telugu, Hindi, or English, and the device translates and **speaks the response aloud** instantly.
+- Clear acoustic visual cards:
+  - 🎤 **YOU SAID — Source Language** (e.g. Telugu)
+  - 🔊 **TRANSLATED RESPONSE — Target Language** (e.g. English)
+
+### 4. 💬 Real-Time Two-Way Conversation Mode
+- Live dialogue channel with automatic turn-taking and context persistence across consecutive sentences.
+- Multi-party transcription with instant voice replay.
+
+### 5. 📄 Document & File Translation
+- Drag-and-drop document interpreter for `.txt`, `.docx`, `.pdf`, and `.md` files.
+
+### 6. 📊 Analytics & Persistent Storage
+- SQLite-backed history tracking with search, favorites, single-click copy, and `.txt` export.
+- Live dashboard displaying total translations, words interpreted, and average latency.
+
+---
+
+## 🛠️ Tech Stack & Modular Organization
+
 ```
-
-- **Frontend**: React 18, Vite, Tailwind CSS, Lucide Icons, Canvas Confetti.
-- **Backend**: Python 3.10+, FastAPI, Uvicorn, SQLite3, Google GTX Engine, OpenAI API integration.
-- **Voice**: Web Speech Recognition (BCP-47 multi-language support) + SpeechSynthesis.
+backend/
+├── main.py                     # FastAPI server, REST & WebSocket endpoints, SQLite setup
+├── services/
+│   ├── orchestrator.py         # EchoBridge Intelligent Orchestrator (Fast Path vs Intelligent Path)
+│   ├── language_service.py     # Script detection, Romanized detection, particle recognition
+│   ├── translation_service.py  # Semantic Intent Map, Neural GTX client, loanword normalization
+│   ├── llm_service.py          # OpenAI GPT meaning resolution with graceful fallback
+│   └── context_service.py      # Conversation turn window & entity reference manager
+├── requirements.txt
+frontend/
+├── src/
+│   ├── App.jsx                 # Glassmorphism portfolio interface, Web Speech API integration
+│   ├── index.css               # Tailwind CSS & design tokens
+│   └── main.jsx
+├── package.json
+└── vite.config.js
+```
 
 ---
 
 ## 🚀 Quickstart & Local Setup
-
-### Prerequisites
-- Node.js (v18+)
-- Python (v3.10+)
 
 ### 1. Clone the Repository
 ```bash
@@ -74,38 +100,25 @@ cd EchoBridge-AI-Personal-AI-Interpreter-Smart-Conversation-Assistant
 
 ### 2. Backend Setup
 ```bash
-# Navigate to backend
 cd backend
-
-# Create virtual environment
 python -m venv venv
-
-# Activate virtual environment
 # Windows:
 .\venv\Scripts\activate
 # macOS/Linux:
 # source venv/bin/activate
 
-# Install dependencies
-pip install fastapi uvicorn requests python-dotenv openai
-
-# Run FastAPI server
+pip install -r requirements.txt
 python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
-Backend API will be live at `http://127.0.0.1:8000`.
+Backend API runs at `http://127.0.0.1:8000`.
 
 ### 3. Frontend Setup
 ```bash
-# Open a new terminal and navigate to frontend
 cd frontend
-
-# Install dependencies
 npm install
-
-# Start Vite dev server
 npm run dev
 ```
-Frontend UI will be running at `http://localhost:5173`.
+Frontend UI runs at `http://localhost:5173`.
 
 ---
 

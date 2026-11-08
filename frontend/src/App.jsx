@@ -721,7 +721,12 @@ export default function App() {
       const resp = await fetch('http://127.0.0.1:8000/api/translate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, source_lang: sLang, target_lang: tLang })
+        body: JSON.stringify({ 
+          text, 
+          source_lang: sLang, 
+          target_lang: tLang,
+          conversation_context: conversation.slice(-4)
+        })
       });
       const data = await resp.json();
 

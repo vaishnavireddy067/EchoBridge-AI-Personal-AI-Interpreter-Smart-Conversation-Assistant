@@ -7,7 +7,7 @@ import re
 import sqlite3
 import urllib.request
 import urllib.parse
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -15,6 +15,9 @@ from langdetect import detect, DetectorFactory
 from dotenv import load_dotenv
 import pypdf
 import docx
+
+from services.orchestrator import EchoBridgeOrchestrator
+from services.language_service import SUPPORTED_LANGUAGES
 
 # Load environment variables (.env)
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
@@ -329,6 +332,7 @@ class TranslateRequest(BaseModel):
     source_lang: Optional[str] = 'auto'
     target_lang: str = 'en'
     tone: Optional[str] = 'default'
+    conversation_context: Optional[List[dict]] = None
 
 class HistoryItemRequest(BaseModel):
     id: str
@@ -364,167 +368,21 @@ class AlternativeRequest(BaseModel):
     source_lang: Optional[str] = 'auto'
     target_lang: str = 'en'
 
-def transliterate_romanized(text: str, target_lang: str = 'te') -> Optional[str]:
-    url = f"https://inputtools.google.com/request?text={urllib.parse.quote(text)}&itc={target_lang}-t-i0-und&num=2"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read().decode())
-            if data[0] == "SUCCESS" and len(data[1]) > 0 and len(data[1][0][1]) > 0:
-                return data[1][0][1][0]
-    except Exception as e:
-        print(f"[Transliterate Error] {e}")
-    return None
-
-def query_gtx(text: str, sl: str = 'auto', tl: str = 'en') -> tuple[str, str]:
-    encoded_text = urllib.parse.quote(text.strip())
-    url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={sl}&tl={tl}&dt=t&q={encoded_text}"
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+def smart_translate_core(
+    text: str,
+    source_lang: str = 'auto',
+    target_lang: str = 'en',
+    tone: str = 'default',
+    conversation_context: Optional[List[dict]] = None
+) -> dict:
+    """Invokes EchoBridge Intelligent Orchestrator."""
+    return EchoBridgeOrchestrator.process_translation(
+        text=text,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        tone=tone,
+        conversation_context=conversation_context
     )
-    with urllib.request.urlopen(req, timeout=6) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-        translated_segments = []
-        if payload and len(payload) > 0 and payload[0]:
-            for item in payload[0]:
-                if item and item[0]:
-                    translated_segments.append(item[0])
-        translated_text = "".join(translated_segments)
-        detected_code = payload[2] if len(payload) > 2 and payload[2] else sl
-        return translated_text, detected_code
-
-def smart_translate_core(text: str, source_lang: str = 'auto', target_lang: str = 'en', tone: str = 'default') -> dict:
-    cleaned = text.strip()
-    if not cleaned:
-        return {
-            "original_text": "",
-            "translated_text": "",
-            "detected_code": "auto",
-            "detected_lang": "Auto Detect",
-            "target_lang": target_lang,
-            "transliterated_script": None
-        }
-
-    cache_key = f"{cleaned.lower()}_{source_lang}_{target_lang}_{tone}"
-    if cache_key in TRANSLATION_CACHE:
-        cached = dict(TRANSLATION_CACHE[cache_key])
-        cached["cached"] = True
-        return cached
-
-    sl = source_lang or 'auto'
-    tl = target_lang or 'en'
-    lower_text = cleaned.lower()
-    transliterated_script = None
-
-    # Step 0: Check Semantic Meaning Dictionary (True Intent Translation, NOT transliteration)
-    sem_res = resolve_semantic_meaning(cleaned, tl)
-    if sem_res:
-        trans_res, det_code, script = sem_res
-        if tone and tone != 'default':
-            trans_res = apply_tone_style(trans_res, tl, tone)
-        result = {
-            "original_text": cleaned,
-            "translated_text": trans_res,
-            "detected_code": det_code,
-            "detected_lang": SUPPORTED_LANGUAGES.get(det_code, "Telugu (తెలుగు)"),
-            "target_lang": tl,
-            "transliterated_script": script,
-            "tone": tone
-        }
-        TRANSLATION_CACHE[cache_key] = result
-        return result
-
-    # Step 1: Check Popular Romanized Dictionary
-    if lower_text in POPULAR_ROMANIZED:
-        native_script, lang_tag = POPULAR_ROMANIZED[lower_text]
-        transliterated_script = native_script
-        sl = lang_tag
-        trans_res, detected = query_gtx(native_script, sl=sl, tl=tl)
-
-        # Meaning correction for loanword translations
-        tl_clean = trans_res.strip().lower().rstrip(".,?!")
-        if tl == 'en':
-            if tl_clean in ('namaste', 'namaskaram', 'namaskar'):
-                trans_res = 'Hello'
-            elif tl_clean in ('dhanyavadalu', 'danyavadalu', 'dhanyawad', 'shukriya'):
-                trans_res = 'Thank you'
-            elif tl_clean in ('tinnara', 'tinara', 'khana khaya'):
-                trans_res = 'Did you eat?'
-            elif tl_clean in ('bagunnara', 'ela unnaru', 'kaise ho'):
-                trans_res = 'How are you?'
-
-        result = {
-            "original_text": cleaned,
-            "translated_text": trans_res,
-            "detected_code": lang_tag,
-            "detected_lang": SUPPORTED_LANGUAGES.get(lang_tag, lang_tag),
-            "target_lang": tl,
-            "transliterated_script": native_script,
-            "tone": tone
-        }
-        TRANSLATION_CACHE[cache_key] = result
-        return result
-
-    # Step 2: GTX Translation
-    try:
-        trans_res, detected_code = query_gtx(cleaned, sl=sl, tl=tl)
-
-        # Transliteration probe for Romanized Telugu/Hindi
-        if (trans_res.strip().lower() == lower_text or detected_code in ('te', 'hi', 'ta', 'kn', 'mr')) and bool(re.match(r'^[a-zA-Z\s,?.!]+$', cleaned)):
-            for try_lang in ['te', 'hi', 'ta']:
-                script = transliterate_romanized(cleaned, try_lang)
-                if script and script != cleaned:
-                    sub_trans, sub_det = query_gtx(script, sl=try_lang, tl=tl)
-                    if sub_trans.strip().lower() != script.strip().lower():
-                        trans_res = sub_trans
-                        detected_code = try_lang
-                        transliterated_script = script
-                        break
-
-        # Meaning correction for loanword translations
-        tl_clean = trans_res.strip().lower().rstrip(".,?!")
-        if tl == 'en':
-            if tl_clean in ('namaste', 'namaskaram', 'namaskar'):
-                trans_res = 'Hello'
-            elif tl_clean in ('dhanyavadalu', 'danyavadalu', 'dhanyawad', 'shukriya'):
-                trans_res = 'Thank you'
-            elif tl_clean in ('tinnara', 'tinara', 'khana khaya'):
-                trans_res = 'Did you eat?'
-            elif tl_clean in ('bagunnara', 'ela unnaru', 'kaise ho'):
-                trans_res = 'How are you?'
-
-        styled_translation = trans_res
-        if tone and tone != 'default':
-            styled_translation = apply_tone_style(trans_res, tl, tone)
-
-        result = {
-            "original_text": cleaned,
-            "translated_text": styled_translation,
-            "detected_code": detected_code,
-            "detected_lang": SUPPORTED_LANGUAGES.get(detected_code, detected_code.upper()),
-            "target_lang": tl,
-            "transliterated_script": transliterated_script,
-            "tone": tone
-        }
-        TRANSLATION_CACHE[cache_key] = result
-        return result
-
-    except Exception as e:
-        print(f"[Translation Engine Error] {e}")
-        try:
-            detected = detect(cleaned)
-        except Exception:
-            detected = 'auto'
-        return {
-            "original_text": cleaned,
-            "translated_text": cleaned,
-            "detected_code": detected,
-            "detected_lang": SUPPORTED_LANGUAGES.get(detected, 'Unknown'),
-            "target_lang": tl,
-            "transliterated_script": None,
-            "tone": tone
-        }
 
 def apply_tone_style(text: str, target_lang: str, tone: str) -> str:
     t = text.strip()
@@ -573,14 +431,13 @@ def get_languages():
 
 @app.post("/api/translate")
 def translate_endpoint(req: TranslateRequest):
-    start = time.time()
     result = smart_translate_core(
         text=req.text,
         source_lang=req.source_lang,
         target_lang=req.target_lang,
-        tone=req.tone or 'default'
+        tone=req.tone or 'default',
+        conversation_context=req.conversation_context
     )
-    result["latency_ms"] = round((time.time() - start) * 1000, 1)
     result["timestamp"] = int(time.time() * 1000)
 
     # Automatically persist to SQLite database
