@@ -73,7 +73,7 @@ def generate_smart_replies(
     scenario: Optional[str] = 'general'
 ) -> List[Dict[str, str]]:
     """
-    EchoBridge AI Smart Reply Generator:
+    Bhashora AI Smart Reply Generator:
     Suggests 3 context-aware replies in target_lang to facilitate seamless communication.
     Adapts according to scenario (doctor, travel, emergency, interview, shopping).
     """

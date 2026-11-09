@@ -29,7 +29,7 @@ def call_llm_translation(
         return None
 
     system_instructions = (
-        "You are EchoBridge AI, a smart multilingual interpreter and conversation assistant. "
+        "You are Bhashora AI, a smart multilingual interpreter and conversation assistant. "
         "Your task is to provide true MEANING-BASED translation, never simple phonetic transliteration. "
         "Intelligently interpret Romanized Indian languages (e.g., Telugu 'ela unnav ra' -> 'How are you, bro?', 'danyavadalu' -> 'Thank you'). "
         "If recent conversation context is provided, resolve pronouns (e.g. 'Atanu' referring to the person mentioned earlier). "

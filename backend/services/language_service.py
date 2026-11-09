@@ -49,7 +49,16 @@ TELUGU_ROMANIZED_KEYWORDS = {
     'shubhadinam', 'tvaraga', 'randi', 'chala', 'thanks', 'ra', 'andi', 'kuda',
     'kadha', 'le', 'mari', 'avunu', 'kadu', 'ledu', 'chustunna', 'chesanu',
     'ki', 'lo', 'unnanu', 'unna', 'avutunna', 'cheyyi', 'chesta', 'kavali',
-    'nuvvu', 'chey'
+    'nuvvu', 'chey', 'vellali', 'cheyali', 'undi', 'unnay', 'povali', 'chudali',
+    'cheppali', 'mari', 'gurinchi', 'cheppandi'
+}
+
+# Common Kannada Romanized keywords
+KANNADA_ROMANIZED_KEYWORDS = {
+    'namaskara', 'hegidira', 'hegiddira', 'hegiddiri', 'chennagiddini', 'chennagi',
+    'oota', 'aayta', 'aytha', 'hogabeku', 'madabeku', 'beku', 'beda', 'hogi', 'banni',
+    'neevu', 'nanu', 'namma', 'nimma', 'elli', 'yelli', 'yaake', 'enu', 'illi', 'illiya',
+    'dhanyavadagalu', 'tumba', 'kelasa', 'manege', 'ge', 'inda', 'alli'
 }
 
 # Common Hindi Romanized keywords
@@ -64,9 +73,17 @@ HINDI_ROMANIZED_KEYWORDS = {
 COMMON_ENGLISH_WORDS = {
     'meeting', 'office', 'late', 'please', 'wait', 'call', 'doctor', 'train',
     'bus', 'station', 'hospital', 'interview', 'time', 'urgent', 'ready',
-    'project', 'message', 'work', 'problem', 'help', 'ticket', 'flight',
+    'project', 'message', 'work', 'works', 'problem', 'help', 'ticket', 'flight',
     'car', 'phone', 'bill', 'money', 'price', 'start', 'cancel', 'sir',
-    'madam', 'boss', 'friend', 'okay', 'ok', 'today', 'tomorrow', 'fast'
+    'madam', 'boss', 'friend', 'okay', 'ok', 'today', 'tomorrow', 'fast',
+    'school', 'college', 'home', 'because', 'so', 'have', 'to', 'go', 'tired'
+}
+
+# English phonetic loanwords commonly transcribed in Indic scripts
+INDIC_ENGLISH_LOANWORDS = {
+    'ఇంపార్టెంట్', 'వర్క్స్', 'వర్క్', 'స్కూల్', 'కాలేజ్', 'ఆఫీస్', 'మీటింగ్', 'డాక్టర్', 'హాస్పిటల్',
+    'టైమ్', 'ఫోన్', 'కాల్', 'బికాజ్', 'సో', 'హావ్', 'టైర్డ్', 'హోమ్', 'ట్రైన్', 'బస్', 'టికెట్',
+    'ప్లీజ్', 'వెయిట్', 'ಪ್ರಾಬ್ಲಮ್', 'ಹೆಲ್ಪ್', 'ಫ್ರೆಂಡ್', 'ಫೋನ್', 'ಆಫೀಸ್', 'ಸ್ಕೂಲ್', 'ಹಾಸ್ಪಿಟಲ್'
 }
 
 TELUGU_MIX_GLUE = {

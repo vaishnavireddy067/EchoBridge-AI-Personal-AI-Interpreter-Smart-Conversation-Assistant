@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 import pypdf
 import docx
 
-from services.orchestrator import EchoBridgeOrchestrator
+from services.orchestrator import BhashoraOrchestrator, EchoBridgeOrchestrator
 from services.language_service import SUPPORTED_LANGUAGES
 from services.reply_service import generate_smart_replies
 
@@ -33,7 +33,7 @@ except Exception:
 # Set deterministic seed for fallback detection
 DetectorFactory.seed = 0
 
-app = FastAPI(title="AI Smart Translator API", version="3.1.0")
+app = FastAPI(title="Bhashora AI Live Interpreter API", version="3.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -389,8 +389,8 @@ def smart_translate_core(
     scenario: str = 'general',
     conversation_context: Optional[List[dict]] = None
 ) -> dict:
-    """Invokes EchoBridge Intelligent Orchestrator."""
-    return EchoBridgeOrchestrator.process_translation(
+    """Invokes Bhashora Intelligent Orchestrator."""
+    return BhashoraOrchestrator.process_translation(
         text=text,
         source_lang=source_lang,
         target_lang=target_lang,
@@ -435,8 +435,8 @@ def apply_tone_style(text: str, target_lang: str, tone: str) -> str:
 @app.get("/")
 def read_root():
     return {
-        "status": "EchoBridge AI Smart Translator Backend is running!",
-        "version": "3.1.0",
+        "status": "Bhashora AI Live Interpreter Backend is running!",
+        "version": "3.2.0",
         "supported_languages": len(SUPPORTED_LANGUAGES)
     }
 

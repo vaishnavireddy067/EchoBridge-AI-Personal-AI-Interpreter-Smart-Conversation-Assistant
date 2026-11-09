@@ -1,19 +1,19 @@
-# 🌐 EchoBridge AI – Personal Live AI Interpreter & Smart Conversation Assistant
+# 🌐 Bhashora AI – Personal Live AI Interpreter & Smart Conversation Assistant
 
-> **India is a multilingual country where language barriers affect students, tourists, patients, and professionals. Existing translators interrupt conversations through manual language selection. EchoBridge AI provides real-time interpretation in the user’s preferred language and suggests suitable replies for seamless, confident communication.**
+> **India is a multilingual country where language barriers affect students, tourists, patients, and professionals. Existing translators interrupt conversations through manual language selection. Bhashora AI provides real-time interpretation in the user’s preferred language and suggests suitable replies for seamless, confident communication.**
 
-![EchoBridge AI Dual-Card Acoustic Interface](https://images.unsplash.com/photo-1522071820081-009f0129c71c?w=1200&h=400&fit=crop)
+![Bhashora AI Dual-Card Acoustic Interface](https://images.unsplash.com/photo-1522071820081-009f0129c71c?w=1200&h=400&fit=crop)
 
 ---
 
-## 🏛️ Architecture: EchoBridge AI Intelligent Orchestrator
+## 🏛️ Architecture: Bhashora AI Intelligent Orchestrator
 
-EchoBridge AI implements a **Low-Latency Hybrid AI Architecture**. Instead of routing every single input through costly LLM APIs, a central orchestrator intelligently classifies each request:
+Bhashora AI implements a **Low-Latency Hybrid AI Architecture**. Instead of routing every single input through costly LLM APIs, a central orchestrator intelligently classifies each request:
 
 ```mermaid
 flowchart TD
     User([User Voice or Text Input]) --> Intelligence[Input Intelligence Layer\n1. Unicode Script Detection\n2. Romanized Indian Language Pattern Matcher\n3. Colloquial Particle & Pronoun Recognition]
-    Intelligence --> Orchestrator{EchoBridge AI\nIntelligent Orchestrator}
+    Intelligence --> Orchestrator{Bhashora AI\nIntelligent Orchestrator}
     
     Orchestrator -->|Common & Direct Inputs\nనమస్తే, ధన్యవాదాలు, తిన్నారా?, danyavadalu| FastPath[⚡ FAST PATH\nCurated Semantic Intent Map + Neural Engine\nUltra-fast in-memory resolution\nZero LLM latency & zero API cost]
     Orchestrator -->|Ambiguous / Contextual / Informal\nela unnav ra, Atanu + conversation context| IntelligentPath[🧠 INTELLIGENT PATH\nContext-Aware LLM Resolution Engine\nHandles conversational slang & pronoun resolution]
@@ -30,7 +30,7 @@ flowchart TD
 ## ✨ Key Capabilities & Features
 
 ### 1. 💬 Smart Suggested Replies (Headline Pitch)
-- When a phrase or question is translated, EchoBridge AI automatically suggests **3 context-aware, natural replies** in the listener's language.
+- When a phrase or question is translated, Bhashora AI automatically suggests **3 context-aware, natural replies** in the listener's language.
 - **Example**:
   - Incoming translated phrase: *"Did you eat?"* (తిన్నారా?)
   - **Suggested Replies**:
@@ -86,7 +86,7 @@ flowchart TD
 
 ## 🔍 How Auto-Detection Works
 
-EchoBridge AI eliminates manual language switching using a 3-tier detection pipeline:
+Bhashora AI eliminates manual language switching using a 3-tier detection pipeline:
 1. **Tier 1 (Unicode Script Analysis)**: Inspects character codepoints to instantly classify native Indic scripts (Telugu `0x0C00–0x0C7F`, Devanagari `0x0900–0x097F`, Tamil, Kannada, Malayalam, Bengali, Gujarati).
 2. **Tier 2 (Romanized Indian Pattern Matcher)**: Analyzes Latin-typed words against a corpus of common Telugu/Hindi grammatical markers (e.g. `unnav`, `chesara`, `tinnava`, `ra`, `kya`, `hai`, `bhai`) to infer the underlying Indian tongue.
 3. **Tier 3 (Statistical N-gram Fallback)**: Uses `langdetect` for standard Latin-script global languages (English, Spanish, French, German, etc.).
@@ -122,8 +122,8 @@ frontend/
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/vaishnavireddy067/EchoBridge-AI-Personal-AI-Interpreter-Smart-Conversation-Assistant.git
-cd EchoBridge-AI-Personal-AI-Interpreter-Smart-Conversation-Assistant
+git clone https://github.com/vaishnavireddy067/EchoBridge-AI-Personal-AI-Interpreter-Smart-Conversation-Assistant.git "Bhashora AI – Personal Live AI Interpreter"
+cd "Bhashora AI – Personal Live AI Interpreter"
 ```
 
 ### 2. Backend Setup
@@ -144,7 +144,7 @@ cp .env.example .env
 # Start FastAPI server
 python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
-> **Note on OpenAI Key**: An OpenAI API key in `.env` is optional for advanced LLM features. If omitted or out of credits, EchoBridge AI automatically falls back to its built-in Semantic Intent Engine and Neural Translation without interruption.
+> **Note on OpenAI Key**: An OpenAI API key in `.env` is optional for advanced LLM features. If omitted or out of credits, Bhashora AI automatically falls back to its built-in Semantic Intent Engine and Neural Translation without interruption.
 
 Backend API will be live at `http://127.0.0.1:8000`.
 

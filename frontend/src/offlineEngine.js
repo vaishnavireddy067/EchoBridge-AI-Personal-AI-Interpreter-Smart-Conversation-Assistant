@@ -1,4 +1,4 @@
-// EchoBridge AI - Offline Local Translation Engine
+// Bhashora AI - Offline Local Translation Engine
 // Provides zero-network translation, phrasebooks, and cached phrase lookups.
 
 export const OFFLINE_PHRASEBOOK = [

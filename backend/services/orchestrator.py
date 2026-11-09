@@ -20,9 +20,9 @@ from .context_service import ConversationContextManager
 # In-memory LRU-style cache
 ORCHESTRATOR_CACHE = {}
 
-class EchoBridgeOrchestrator:
+class BhashoraOrchestrator:
     """
-    EchoBridge AI Intelligent Orchestrator:
+    Bhashora AI Intelligent Orchestrator:
     Central decision engine implementing Hybrid Fast Path ⚡ vs Intelligent Path 🧠.
     """
 
@@ -149,10 +149,12 @@ class EchoBridgeOrchestrator:
                 execution_path = "fast_path_romanized"
             else:
                 try:
-                    gtx_trans, gtx_detected = query_gtx(cleaned, sl=sl, tl=tl)
+                    effective_sl = inferred_lang if (sl == 'auto' and inferred_lang and inferred_lang != 'auto') else sl
+                    gtx_trans, gtx_detected = query_gtx(cleaned, sl=effective_sl, tl=tl)
                     # Romanized transliteration probe if GTX simply echoed the word
                     if (gtx_trans.strip().lower() == lower_clean or gtx_detected in ('te', 'hi', 'ta', 'kn')) and script == 'latin':
-                        for candidate_lang in ['te', 'hi', 'ta']:
+                        candidate_langs = [inferred_lang] if (inferred_lang in ('te', 'hi', 'ta', 'kn')) else ['te', 'hi', 'kn', 'ta']
+                        for candidate_lang in candidate_langs:
                             cand_script = transliterate_romanized(cleaned, candidate_lang)
                             if cand_script and cand_script != cleaned:
                                 sub_trans, _ = query_gtx(cand_script, sl=candidate_lang, tl=tl)
@@ -163,12 +165,12 @@ class EchoBridgeOrchestrator:
                                     break
 
                     trans_text = normalize_meaning_loanwords(gtx_trans, tl)
-                    detected_code = gtx_detected
+                    detected_code = gtx_detected or effective_sl
                     execution_path = "fast_path_neural"
                 except Exception as e:
                     print(f"[Orchestrator GTX Error] {e}")
                     trans_text = cleaned
-                    detected_code = 'auto'
+                    detected_code = inferred_lang or 'auto'
                     execution_path = "fallback_echo"
 
         # -------------------------------------------------------------
@@ -178,7 +180,6 @@ class EchoBridgeOrchestrator:
             entities = ConversationContextManager.extract_recent_entities(conversation_context)
             if entities and ("he" in trans_text.lower().split() or "him" in trans_text.lower().split()):
                 person_name = entities[-1]
-                # Enhance contextual clarity: e.g. "When will he arrive?" -> "When will he (Ravi) arrive?"
                 trans_text = re.sub(r'\b(he)\b', f'he ({person_name})', trans_text, count=1, flags=re.IGNORECASE)
 
         latency = round((time.time() - start_time) * 1000, 1)
@@ -201,6 +202,10 @@ class EchoBridgeOrchestrator:
             "latency_ms": latency
         }
 
-        ORCHESTRATOR_CACHE[cache_key] = result
+        if execution_path != "fallback_echo":
+            ORCHESTRATOR_CACHE[cache_key] = result
         return result
+
+# Backward compatibility alias
+EchoBridgeOrchestrator = BhashoraOrchestrator
 

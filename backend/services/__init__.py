@@ -1,2 +1,1 @@
-# EchoBridge AI Services Package
-
+# Bhashora AI Services Package

@@ -145,7 +145,7 @@ export default function App() {
   // 3-Stage Experience:
   // Page 1: Splash (showSplash = true for 2.0s, NO button, auto-transitions)
   // Page 2: Main Standalone Live Translator (currentStage = 'translator')
-  // Page 3: Full EchoBridge AI Workspace with Sidebar (currentStage = 'workspace')
+  // Page 3: Full Bhashora AI Workspace with Sidebar (currentStage = 'workspace')
   const [currentStage, setCurrentStage] = useState('translator');
   const [showSplash, setShowSplash] = useState(true);
   const [activeNav, setActiveNav] = useState('live-interpreter');
@@ -241,7 +241,7 @@ export default function App() {
   // History & Favorites (localStorage)
   const [history, setHistory] = useState(() => {
     try {
-      const saved = localStorage.getItem('echobridge_history_v3');
+      const saved = localStorage.getItem('bhashora_history_v3') || localStorage.getItem('echobridge_history_v3');
       return saved ? JSON.parse(saved) : [
         {
           id: 'sample_1',
@@ -366,7 +366,7 @@ export default function App() {
   // Persist history
   useEffect(() => {
     try {
-      localStorage.setItem('echobridge_history_v3', JSON.stringify(history));
+      localStorage.setItem('bhashora_history_v3', JSON.stringify(history));
     } catch (e) {
       console.error(e);
     }
@@ -882,58 +882,52 @@ export default function App() {
       const fullTrimmed = currentSessionText.trim();
       if (!fullTrimmed) return;
 
-      // Update what user said in real-time so the full sentence is visible live as they speak
+      // Update what user said in real-time with zero lag
       setInputText(fullTrimmed);
       setLiveInterimText(fullTrimmed);
       accumulatedSpeechRef.current = fullTrimmed;
 
-      // Reset the silence debounce timer
+      // Reset the silence debounce timer on every new speech event
       if (speechSilenceTimerRef.current) {
         clearTimeout(speechSilenceTimerRef.current);
       }
 
-      // Allow natural breathing pauses: wait 1300ms of true silence before finalizing the full sentence
+      // 🎯 When user stops speaking, within ~1.8-2.0s finalize complete sentence & speak in target language
       speechSilenceTimerRef.current = setTimeout(() => {
         const finalPhrase = accumulatedSpeechRef.current.trim();
         if (finalPhrase) {
           accumulatedSpeechRef.current = '';
           setLiveInterimText('');
+          speechSilenceTimerRef.current = null;
           // Stop recognition BEFORE processing & speaking so mic never hears TTS!
           try { sr.stop(); } catch (err) {}
           liveRecognitionRef.current = null;
           processSpeakerVoice(finalPhrase);
         }
-      }, 1300);
+      }, 1800);
     };
 
     sr.onerror = (e) => {
       if (e.error === 'no-speech' && isLiveActiveRef.current) {
         setTimeout(() => {
           if (isLiveActiveRef.current) startLiveTurn();
-        }, 300);
+        }, 200);
       } else if (e.error !== 'aborted') {
-        console.warn("Live listening error:", e.error);
+        console.warn("Live listening notice:", e.error);
       }
     };
 
     sr.onend = () => {
-      // If recognition stopped but we still have speech accumulated:
-      if (accumulatedSpeechRef.current.trim()) {
-        if (speechSilenceTimerRef.current) clearTimeout(speechSilenceTimerRef.current);
-        const finalPhrase = accumulatedSpeechRef.current.trim();
-        accumulatedSpeechRef.current = '';
-        setLiveInterimText('');
-        liveRecognitionRef.current = null;
-        processSpeakerVoice(finalPhrase);
-        return;
-      }
-
+      // If silence timer is still ticking, the user was just pausing for breath:
+      // Do NOT interrupt or submit early! Keep listening until the ~1.8-2s silence timer fires!
       if (isLiveActiveRef.current && liveStatusRef.current === 'listening') {
         setTimeout(() => {
           if (isLiveActiveRef.current && liveStatusRef.current === 'listening') {
-            startLiveTurn();
+            try {
+              sr.start();
+            } catch (err) {}
           }
-        }, 250);
+        }, 80);
       }
     };
 
@@ -1029,7 +1023,7 @@ export default function App() {
 
   // Native Share
   const handleShare = async (orig, trans, sLang, tLang) => {
-    const textToShare = `Original: ${orig}\n\nTranslated (${LANGUAGES[tLang] || tLang}): ${trans}\n\n— Translated via EchoBridge AI Smart Translator`;
+    const textToShare = `Original: ${orig}\n\nTranslated (${LANGUAGES[tLang] || tLang}): ${trans}\n\n— Translated via Bhashora AI Smart Translator`;
     if (navigator.share) {
       try {
         await navigator.share({ title: 'AI Smart Translation', text: textToShare });
@@ -1325,7 +1319,7 @@ export default function App() {
 
           {/* Brand Typography */}
           <h1 className="text-4xl md:text-5xl font-black tracking-tight text-white mb-2">
-            EchoBridge <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-indigo-300 to-cyan-400">AI</span>
+            Bhashora <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-indigo-300 to-cyan-400">AI</span>
           </h1>
           <p className="text-base md:text-lg font-medium text-indigo-300/90 mb-1">
             "Breaking Language Barriers, Instantly."
@@ -1382,7 +1376,7 @@ export default function App() {
               </div>
               <div>
                 <h1 className="font-extrabold text-base tracking-tight text-white flex items-center gap-1.5">
-                  EchoBridge <span className="bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">AI</span>
+                  Bhashora <span className="bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">AI</span>
                 </h1>
                 <p className="text-[10px] text-slate-400 font-medium">Personal Live AI Interpreter</p>
               </div>
@@ -1647,7 +1641,7 @@ export default function App() {
               </div>
               <div>
                 <h1 className="font-extrabold text-base tracking-tight text-white flex items-center gap-1">
-                  EchoBridge <span className="bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">AI</span>
+                  Bhashora <span className="bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">AI</span>
                 </h1>
                 <p className="text-[10px] text-slate-400 font-medium">Personal Live AI Interpreter ✨</p>
               </div>
@@ -1840,7 +1834,7 @@ export default function App() {
 
             <div className="hidden lg:flex items-center gap-2 px-3 py-1 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-xs">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="font-bold text-white">EchoBridge AI</span>
+              <span className="font-bold text-white">Bhashora AI</span>
               <span className="text-slate-400">• Live Two-Way Interpreter</span>
             </div>
 
@@ -1903,7 +1897,7 @@ export default function App() {
               {darkMode ? <Sun className="w-4 h-4 text-amber-300" /> : <Moon className="w-4 h-4 text-slate-300" />}
             </button>
             <button 
-              onClick={() => showToast("EchoBridge AI status: All systems operational")}
+              onClick={() => showToast("Bhashora AI status: All systems operational")}
               className="relative p-2 rounded-xl bg-slate-800/70 border border-slate-700/60 text-slate-300 hover:text-white transition-colors cursor-pointer"
               title="Notifications"
             >
@@ -2468,7 +2462,7 @@ export default function App() {
                 <p className="text-xs text-slate-400">
                   {isLiveActive 
                     ? 'Speak naturally in Telugu or Hindi/English — automatic turn detection active' 
-                    : 'Two people speak naturally in different languages. EchoBridge AI translates and speaks in real-time.'}
+                    : 'Two people speak naturally in different languages. Bhashora AI translates and speaks in real-time.'}
                 </p>
               </div>
 
@@ -2938,7 +2932,7 @@ export default function App() {
                 📴 Offline Translation Hub
               </h2>
               <p className="text-slate-400 text-xs md:text-sm max-w-xl mx-auto">
-                No internet? No problem. EchoBridge AI includes pre-loaded local phrase packs, semantic meaning caches, and offline voice synthesis for seamless communication anytime, anywhere.
+                No internet? No problem. Bhashora AI includes pre-loaded local phrase packs, semantic meaning caches, and offline voice synthesis for seamless communication anytime, anywhere.
               </p>
             </div>
 
@@ -3826,7 +3820,7 @@ export default function App() {
                       const transcriptText = history.slice().reverse().map((item, idx) => 
                         `[${item.time}] Speaker #${idx + 1} (${item.detected_lang || 'Source'}):\n${item.original_text}\n-> Translated (${LANGUAGES[item.target_lang] || item.target_lang}): ${item.translated_text}\n`
                       ).join('\n---\n\n');
-                      const header = `ECHOBRIDGE AI — CONVERSATION TRANSCRIPT\nScenario: ${selectedScenario.toUpperCase()}\nDate: ${new Date().toLocaleString()}\nExchanges: ${history.length}\n${'='.repeat(45)}\n\n`;
+                      const header = `BHASHORA AI — CONVERSATION TRANSCRIPT\nScenario: ${selectedScenario.toUpperCase()}\nDate: ${new Date().toLocaleString()}\nExchanges: ${history.length}\n${'='.repeat(45)}\n\n`;
                       navigator.clipboard.writeText(header + transcriptText);
                       showToast("Full conversation transcript copied to clipboard!");
                     }}
@@ -3841,12 +3835,12 @@ export default function App() {
                       const transcriptText = history.slice().reverse().map((item, idx) => 
                         `### Turn ${idx + 1} (${item.time})\n- **${item.detected_lang || 'Source'}**: ${item.original_text}\n- **${LANGUAGES[item.target_lang] || item.target_lang}**: ${item.translated_text}\n`
                       ).join('\n');
-                      const header = `# EchoBridge AI — Consultation Transcript\n\n- **Scenario**: ${selectedScenario}\n- **Date**: ${new Date().toLocaleString()}\n- **Exchanges**: ${history.length}\n\n---\n\n`;
+                      const header = `# Bhashora AI — Consultation Transcript\n\n- **Scenario**: ${selectedScenario}\n- **Date**: ${new Date().toLocaleString()}\n- **Exchanges**: ${history.length}\n\n---\n\n`;
                       const blob = new Blob([header + transcriptText], { type: 'text/markdown;charset=utf-8' });
                       const url = URL.createObjectURL(blob);
                       const a = document.createElement('a');
                       a.href = url;
-                      a.download = `echobridge-transcript-${selectedScenario}-${Date.now()}.md`;
+                      a.download = `bhashora-transcript-${selectedScenario}-${Date.now()}.md`;
                       a.click();
                       URL.revokeObjectURL(url);
                       showToast("Transcript downloaded as Markdown!");
