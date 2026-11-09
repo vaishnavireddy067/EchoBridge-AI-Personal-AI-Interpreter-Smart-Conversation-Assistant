@@ -69,3 +69,4 @@ def call_llm_translation(
         # Graceful fallback: RateLimitError (429), Network timeout, etc.
         print(f"[LLM Service Notice] Fallback triggered: {type(e).__name__} - {str(e)[:100]}")
         return None
+

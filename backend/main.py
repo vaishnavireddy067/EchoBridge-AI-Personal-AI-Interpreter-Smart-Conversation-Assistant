@@ -18,6 +18,7 @@ import docx
 
 from services.orchestrator import EchoBridgeOrchestrator
 from services.language_service import SUPPORTED_LANGUAGES
+from services.reply_service import generate_smart_replies
 
 # Load environment variables (.env)
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
@@ -332,6 +333,7 @@ class TranslateRequest(BaseModel):
     source_lang: Optional[str] = 'auto'
     target_lang: str = 'en'
     tone: Optional[str] = 'default'
+    scenario: Optional[str] = 'general'
     conversation_context: Optional[List[dict]] = None
 
 class HistoryItemRequest(BaseModel):
@@ -368,11 +370,23 @@ class AlternativeRequest(BaseModel):
     source_lang: Optional[str] = 'auto'
     target_lang: str = 'en'
 
+class SuggestRepliesRequest(BaseModel):
+    text: str
+    target_lang: Optional[str] = 'en'
+    context: Optional[List[dict]] = None
+    scenario: Optional[str] = 'general'
+
+class PronounceScoreRequest(BaseModel):
+    reference_text: str
+    spoken_attempt: str
+    target_lang: Optional[str] = 'en'
+
 def smart_translate_core(
     text: str,
     source_lang: str = 'auto',
     target_lang: str = 'en',
     tone: str = 'default',
+    scenario: str = 'general',
     conversation_context: Optional[List[dict]] = None
 ) -> dict:
     """Invokes EchoBridge Intelligent Orchestrator."""
@@ -381,6 +395,7 @@ def smart_translate_core(
         source_lang=source_lang,
         target_lang=target_lang,
         tone=tone,
+        scenario=scenario,
         conversation_context=conversation_context
     )
 
@@ -436,6 +451,7 @@ def translate_endpoint(req: TranslateRequest):
         source_lang=req.source_lang,
         target_lang=req.target_lang,
         tone=req.tone or 'default',
+        scenario=req.scenario or 'general',
         conversation_context=req.conversation_context
     )
     result["timestamp"] = int(time.time() * 1000)
@@ -683,6 +699,79 @@ def explain_endpoint(req: ExplainRequest):
         "formality": "Neutral / Standard",
         "breakdown": breakdown,
         "cultural_note": f"Translated into {SUPPORTED_LANGUAGES.get(req.target_lang, req.target_lang)} with natural phrasing."
+    }
+
+@app.post("/api/ai/suggest-replies")
+def suggest_replies_endpoint(req: SuggestRepliesRequest):
+    """Headline Feature: Suggests 3 suitable context-aware replies for confident communication."""
+    ctx_summary = None
+    if req.context:
+        ctx_summary = "\n".join([f"{c.get('speaker', 'User')}: {c.get('text', '')}" for c in req.context[-3:]])
+    replies = generate_smart_replies(
+        text=req.text,
+        target_lang=req.target_lang or 'en',
+        context_summary=ctx_summary,
+        scenario=req.scenario or 'general'
+    )
+    return {
+        "original_text": req.text,
+        "target_lang": req.target_lang,
+        "scenario": req.scenario or 'general',
+        "replies": replies
+    }
+
+@app.post("/api/pronunciation/score")
+def score_pronunciation_endpoint(req: PronounceScoreRequest):
+    """Pronunciation Practice Coach: Analyzes spoken attempt vs target sentence."""
+    import string
+    ref = req.reference_text.strip().lower()
+    attempt = req.spoken_attempt.strip().lower()
+
+    clean_ref = "".join([c for c in ref if c not in string.punctuation])
+    clean_attempt = "".join([c for c in attempt if c not in string.punctuation])
+
+    ref_words = clean_ref.split()
+    attempt_words = set(clean_attempt.split())
+
+    if not ref_words:
+        return {
+            "score": 0,
+            "grade": "Keep Practicing 🔄",
+            "feedback": "Please speak the phrase clearly into the microphone.",
+            "matched_words": []
+        }
+
+    matched_words = []
+    matches = 0
+    for w in ref_words:
+        if w in attempt_words:
+            matched_words.append({"word": w, "status": "correct"})
+            matches += 1
+        else:
+            matched_words.append({"word": w, "status": "needs_practice"})
+
+    accuracy = round((matches / max(len(ref_words), 1)) * 100)
+    len_diff = abs(len(clean_ref) - len(clean_attempt))
+    if len_diff > 12 and accuracy > 20:
+        accuracy = max(10, accuracy - 15)
+
+    if accuracy >= 85:
+        grade = "Excellent ⭐⭐⭐"
+        feedback = "Terrific pronunciation! Your speech matches native cadence."
+    elif accuracy >= 60:
+        grade = "Good ⭐⭐"
+        feedback = "Clear and understandable. Practice the highlighted words to sound native."
+    else:
+        grade = "Keep Practicing 🔄"
+        feedback = "Listen to the speaker audio again and repeat at a slightly slower pace."
+
+    return {
+        "score": accuracy,
+        "grade": grade,
+        "feedback": feedback,
+        "reference": req.reference_text,
+        "attempt": req.spoken_attempt,
+        "matched_words": matched_words
     }
 
 @app.post("/api/document/translate")

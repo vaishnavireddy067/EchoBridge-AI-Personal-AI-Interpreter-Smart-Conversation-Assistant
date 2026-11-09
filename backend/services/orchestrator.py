@@ -33,6 +33,7 @@ class EchoBridgeOrchestrator:
         source_lang: Optional[str] = 'auto',
         target_lang: str = 'en',
         tone: Optional[str] = 'default',
+        scenario: Optional[str] = 'general',
         conversation_context: Optional[List[Dict[str, str]]] = None
     ) -> Dict[str, Any]:
         cleaned = text.strip()
@@ -51,7 +52,8 @@ class EchoBridgeOrchestrator:
         sl = source_lang or 'auto'
         tl = target_lang or 'en'
         tone_val = tone or 'default'
-        cache_key = f"{cleaned.lower()}_{sl}_{tl}_{tone_val}_{bool(conversation_context)}"
+        scen_val = scenario or 'general'
+        cache_key = f"{cleaned.lower()}_{sl}_{tl}_{tone_val}_{scen_val}_{bool(conversation_context)}"
 
         # 0. Check Cache
         if cache_key in ORCHESTRATOR_CACHE:
@@ -190,8 +192,15 @@ class EchoBridgeOrchestrator:
             "transliterated_script": transliterated_script,
             "execution_path": execution_path,
             "tone": tone_val,
+            "scenario": scen_val,
+            "code_mixed": intel.get("code_mixed", False),
+            "code_mixed_type": intel.get("code_mixed_type", None),
+            "politeness_flag": intel.get("politeness_flag", False),
+            "politeness_tip": intel.get("politeness_tip", None),
+            "politeness_suggestion": intel.get("politeness_suggestion", None),
             "latency_ms": latency
         }
 
         ORCHESTRATOR_CACHE[cache_key] = result
         return result
+

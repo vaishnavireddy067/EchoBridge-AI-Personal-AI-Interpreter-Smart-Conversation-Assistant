@@ -47,7 +47,9 @@ TELUGU_ROMANIZED_KEYWORDS = {
     'vastundi', 'repu', 'ivvala', 'ninna', 'eppudu', 'ekkadiki',
     'atanu', 'aame', 'vaaru', 'manamu', 'meeru', 'subhodayam', 'subharatri',
     'shubhadinam', 'tvaraga', 'randi', 'chala', 'thanks', 'ra', 'andi', 'kuda',
-    'kadha', 'le', 'mari', 'avunu', 'kadu', 'ledu', 'chustunna', 'chesanu'
+    'kadha', 'le', 'mari', 'avunu', 'kadu', 'ledu', 'chustunna', 'chesanu',
+    'ki', 'lo', 'unnanu', 'unna', 'avutunna', 'cheyyi', 'chesta', 'kavali',
+    'nuvvu', 'chey'
 }
 
 # Common Hindi Romanized keywords
@@ -55,8 +57,31 @@ HINDI_ROMANIZED_KEYWORDS = {
     'namaste', 'namaskar', 'pranam', 'shukriya', 'dhanyawad', 'kaise', 'ho',
     'kya', 'haal', 'hai', 'aap', 'tum', 'kar', 'rahe', 'kahan', 'ja',
     'khana', 'khaya', 'theek', 'haan', 'nahi', 'bhai', 'yaar', 'bolo',
-    'sunoji', 'kal', 'aayega', 'shubh', 'prabhat', 'ratri'
+    'sunoji', 'kal', 'aayega', 'shubh', 'prabhat', 'ratri', 'mein', 'karo'
 }
+
+# English words commonly code-mixed in Tanglish, Hinglish, Tenglish
+COMMON_ENGLISH_WORDS = {
+    'meeting', 'office', 'late', 'please', 'wait', 'call', 'doctor', 'train',
+    'bus', 'station', 'hospital', 'interview', 'time', 'urgent', 'ready',
+    'project', 'message', 'work', 'problem', 'help', 'ticket', 'flight',
+    'car', 'phone', 'bill', 'money', 'price', 'start', 'cancel', 'sir',
+    'madam', 'boss', 'friend', 'okay', 'ok', 'today', 'tomorrow', 'fast'
+}
+
+TELUGU_MIX_GLUE = {
+    'ki', 'lo', 'unnanu', 'unna', 'avutunna', 'avutundi', 'cheyyi', 'chesta',
+    'chey', 'chesanu', 'vastunna', 'vastundi', 'kavali', 'leda', 'undhi',
+    'undi', 'choodu', 'ippudu', 'gurinchi', 'cheppandi', 'ra'
+}
+
+HINDI_MIX_GLUE = {
+    'mein', 'me', 'pe', 'par', 'ho', 'gaya', 'raha', 'rahi', 'karo', 'karna',
+    'hoga', 'hai', 'tha', 'thi', 'chal', 'aao', 'bolo', 'dekh', 'mat', 'bhai'
+}
+
+TELUGU_INFORMAL_TOKENS = {'nuvvu', 'nuvva', 'tinava', 'chey', 'ra', 'నువ్వు', 'తిన్నావా', 'చెయ్'}
+HINDI_INFORMAL_TOKENS = {'tu', 'tera', 'teri', 'tere', 'tum', 'तू', 'तुम'}
 
 def detect_script(text: str) -> str:
     """Detect whether text contains Indic scripts or Latin alphabet."""
@@ -109,6 +134,43 @@ def analyze_input(text: str, source_lang: Optional[str] = 'auto') -> dict:
     if any(t in pronouns for t in tokens):
         has_context_pronoun = True
 
+    # Code-Mixed Language Analysis (Tenglish / Hinglish / Tanglish)
+    code_mixed = False
+    code_mixed_type = None
+
+    en_word_count = sum(1 for t in tokens if t in COMMON_ENGLISH_WORDS)
+    te_word_count = sum(1 for t in tokens if t in TELUGU_ROMANIZED_KEYWORDS or t in TELUGU_MIX_GLUE)
+    hi_word_count = sum(1 for t in tokens if t in HINDI_ROMANIZED_KEYWORDS or t in HINDI_MIX_GLUE)
+
+    if en_word_count > 0 and te_word_count > 0:
+        code_mixed = True
+        code_mixed_type = "Tenglish (Telugu + English)"
+        inferred_lang = 'te'
+        is_romanized = True
+    elif en_word_count > 0 and hi_word_count > 0:
+        code_mixed = True
+        code_mixed_type = "Hinglish (Hindi + English)"
+        inferred_lang = 'hi'
+        is_romanized = True
+
+    # Politeness & Cultural Coach Analysis
+    politeness_flag = False
+    politeness_tip = None
+    politeness_suggestion = None
+
+    has_te_informal = any(t in TELUGU_INFORMAL_TOKENS for t in tokens)
+    has_hi_informal = any(t in HINDI_INFORMAL_TOKENS for t in tokens)
+
+    if has_te_informal:
+        politeness_flag = True
+        politeness_tip = "Informal address ('nuvvu' / 'ra' / 'తిన్నావా') detected. In professional, elder, or healthcare conversations, respectful 'meeru' (మీరు) or honorific 'andi' (అండి) is customary in Telugu culture."
+        # Generate respectful alternative
+        politeness_suggestion = cleaned.replace('nuvvu', 'meeru').replace('nuvva', 'meera').replace('chey', 'cheyandi').replace('tinava', 'tinnara')
+    elif has_hi_informal:
+        politeness_flag = True
+        politeness_tip = "Casual address ('tu' / 'tum') detected. For elders, clients, or medical staff, respectful 'aap' (आप) with honorific '-ji' is standard etiquette in Indian culture."
+        politeness_suggestion = cleaned.replace('tu', 'aap').replace('tum', 'aap').replace('tera', 'aapka').replace('teri', 'aapki')
+
     if script == 'latin':
         # Check against Romanized vocabulary sets
         te_matches = sum(1 for t in tokens if t in TELUGU_ROMANIZED_KEYWORDS)
@@ -142,5 +204,11 @@ def analyze_input(text: str, source_lang: Optional[str] = 'auto') -> dict:
         "has_informal_marker": has_informal_marker,
         "informal_particle": informal_particle,
         "has_context_pronoun": has_context_pronoun,
+        "code_mixed": code_mixed,
+        "code_mixed_type": code_mixed_type,
+        "politeness_flag": politeness_flag,
+        "politeness_tip": politeness_tip,
+        "politeness_suggestion": politeness_suggestion,
         "tokens": tokens
     }
+
