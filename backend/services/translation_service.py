@@ -114,14 +114,14 @@ SEMANTIC_MEANINGS = {
             'meeru ela unnaru', 'meeru ela unnaru?', 'ela unnaru', 'ela unnaru?', 'elavunnaru', 'elavunnaru?', 'ela unnav', 'ela unnav?', 'bagunnara', 'bagunnara?', 'bagunara', 
             'kaise ho', 'kaise ho?', 'aap kaise ho', 'aap kaise ho?', 'aap kaise hain', 'aap kaise hain?', 'kya haal hai', 'kya haal hai?',
             'आप कैसे हैं?', 'आप कैसे हैं', 'आप कैसे हो?', 'आप कैसे हो', 'कैसे हो?', 'कैसे हो',
-            'எப்படி இருக்கிறீர்கள்?', 'எப்படி இருக்கீங்க?', 'ಹೇಗಿದ್ದೀರಾ?'
+            'எப்படி இருக்கிறீர்கள்?', 'எப்படி இருக்கீங்க?', 'ಹೇಗಿದ್ದೀರಾ?', 'ನೀವು ಹೇಗಿದ್ದೀರಿ?', 'ನೀವು ಹೇಗಿದ್ದೀರಿ'
         ],
         'translations': {
             'en': 'How are you?',
             'te': 'మీరు ఎలా ఉన్నారు?',
             'hi': 'आप कैसे हैं?',
             'ta': 'எப்படி இருக்கிறீர்கள்?',
-            'kn': 'ಹೇಗಿದ್ದೀರಾ?',
+            'kn': 'ನೀವು ಹೇಗಿದ್ದೀರಿ?',
             'es': '¿Cómo estás?',
             'fr': 'Comment allez-vous ?',
             'de': 'Wie geht es Ihnen?'

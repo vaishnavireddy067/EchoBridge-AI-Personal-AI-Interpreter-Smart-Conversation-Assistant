@@ -51,7 +51,8 @@ import {
   WifiOff,
   Printer,
   Menu,
-  ArrowLeft
+  ArrowLeft,
+  Square
 } from 'lucide-react';
 import { translateOffline, OFFLINE_PHRASEBOOK, OFFLINE_PACKS } from './offlineEngine.js';
 
@@ -332,6 +333,10 @@ export default function App() {
   const accumulatedSpeechRef = useRef('');
   const speechSilenceTimerRef = useRef(null);
   const activeAudioRef = useRef(null);
+  const currentUtteranceRef = useRef(null);
+  const lastSubmittedPhraseRef = useRef('');
+  const voicesRef = useRef([]);
+  const [cachedVoices, setCachedVoices] = useState([]);
 
   // Sync refs with reactive state
   useEffect(() => {
@@ -381,7 +386,33 @@ export default function App() {
     }, duration);
   };
 
-  // High-fidelity Native Audio Stream + Browser SpeechSynthesis fallback
+  // Preload and cache browser speech synthesis voices via 'voiceschanged'
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+
+    const loadVoices = () => {
+      try {
+        const v = window.speechSynthesis.getVoices();
+        if (v && v.length > 0) {
+          voicesRef.current = v;
+          setCachedVoices(v);
+        }
+      } catch (e) {
+        console.warn("Failed to load synthesis voices:", e);
+      }
+    };
+
+    loadVoices();
+    if (window.speechSynthesis.onvoiceschanged !== undefined) {
+      window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
+    window.speechSynthesis.addEventListener('voiceschanged', loadVoices);
+    return () => {
+      window.speechSynthesis.removeEventListener('voiceschanged', loadVoices);
+    };
+  }, []);
+
+  // Fast Voice Matching & Speech Synthesis (Browser SpeechSynthesis + Native Stream Fallback)
   const playAudioSpeech = useCallback((text, langCode, onEndCallback = null) => {
     if (!text || !text.trim()) {
       if (onEndCallback) onEndCallback();
@@ -393,79 +424,107 @@ export default function App() {
       if (finished) return;
       finished = true;
       setIsSpeaking(false);
+      currentUtteranceRef.current = null;
       if (onEndCallback) onEndCallback();
     };
 
     setIsSpeaking(true);
+    setSpeakerState('speaking');
+    liveStatusRef.current = 'speaking';
 
-    const fallbackBrowserSpeech = () => {
-      if (typeof window === 'undefined' || !window.speechSynthesis) {
-        finishOnce();
-        return;
-      }
-      try { window.speechSynthesis.cancel(); } catch (e) {}
+    const bcp47 = SPEECH_LANGS[langCode]?.code || (
+      langCode === 'te' ? 'te-IN' :
+      langCode === 'en' ? 'en-US' :
+      langCode === 'hi' ? 'hi-IN' :
+      langCode === 'kn' ? 'kn-IN' :
+      langCode === 'ta' ? 'ta-IN' :
+      langCode === 'es' ? 'es-ES' : 'en-US'
+    );
+    const prefix = langCode.toLowerCase().split('-')[0];
+    const available = voicesRef.current.length > 0 ? voicesRef.current : (window.speechSynthesis?.getVoices() || []);
 
-      setTimeout(() => {
-        const utterance = new SpeechSynthesisUtterance(text);
-        const bcp47 = SPEECH_LANGS[langCode]?.code || (langCode === 'kn' ? 'kn-IN' : langCode === 'te' ? 'te-IN' : langCode === 'hi' ? 'hi-IN' : langCode === 'ta' ? 'ta-IN' : 'en-US');
-        utterance.lang = bcp47;
-        utterance.rate = speechSpeed || 1.0;
+    // Try finding matching native voice
+    let matchingVoice = available.find(v => v.lang.replace('_', '-').toLowerCase() === bcp47.toLowerCase());
+    if (!matchingVoice) {
+      matchingVoice = available.find(v => v.lang.toLowerCase().startsWith(prefix));
+    }
 
-        const voices = window.speechSynthesis.getVoices();
-        if (voices && voices.length > 0) {
-          const match = voices.find(v => v.lang === bcp47 || v.lang.replace('_', '-') === bcp47 || v.lang.startsWith(langCode));
-          if (match) utterance.voice = match;
+    const streamNativeAudio = () => {
+      try {
+        const audioUrl = `http://127.0.0.1:8000/api/tts?lang=${encodeURIComponent(langCode || 'en')}&text=${encodeURIComponent(text)}`;
+        const audio = new Audio(audioUrl);
+
+        if (activeAudioRef.current) {
+          try {
+            activeAudioRef.current.pause();
+            activeAudioRef.current.currentTime = 0;
+          } catch (e) {}
         }
+        activeAudioRef.current = audio;
 
-        utterance.onend = finishOnce;
-        utterance.onerror = (e) => {
-          console.warn("SpeechSynthesis error:", e);
+        audio.onplay = () => {
+          setSpeakerState('speaking');
+          liveStatusRef.current = 'speaking';
+        };
+        audio.onended = () => {
+          activeAudioRef.current = null;
+          finishOnce();
+        };
+        audio.onerror = (e) => {
+          console.warn("Native TTS audio stream error:", e);
+          activeAudioRef.current = null;
           finishOnce();
         };
 
-        try {
-          window.speechSynthesis.speak(utterance);
-        } catch (err) {
-          finishOnce();
+        const p = audio.play();
+        if (p !== undefined) {
+          p.catch((err) => {
+            console.warn("Audio play notice:", err);
+            activeAudioRef.current = null;
+            finishOnce();
+          });
         }
-      }, 50);
+      } catch (err) {
+        finishOnce();
+      }
     };
 
-    // 1. Try High-Fidelity Native TTS Stream from backend first (100% authentic pronunciation for Indic & global languages)
-    try {
-      const audioUrl = `http://127.0.0.1:8000/api/tts?lang=${encodeURIComponent(langCode || 'en')}&text=${encodeURIComponent(text)}`;
-      const audio = new Audio(audioUrl);
+    // 1. FAST PATH: If browser has a native voice, speak immediately with SpeechSynthesis (0ms delay!)
+    if (matchingVoice && typeof window !== 'undefined' && window.speechSynthesis) {
+      try {
+        if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+          window.speechSynthesis.cancel();
+        }
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
 
-      if (activeAudioRef.current) {
-        try {
-          activeAudioRef.current.pause();
-          activeAudioRef.current.currentTime = 0;
-        } catch (e) {}
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = bcp47;
+        utterance.voice = matchingVoice;
+        utterance.rate = speechSpeed || 1.0;
+
+        utterance.onstart = () => {
+          setSpeakerState('speaking');
+          liveStatusRef.current = 'speaking';
+        };
+        utterance.onend = finishOnce;
+        utterance.onerror = (e) => {
+          console.warn("SpeechSynthesis error, falling back to audio stream:", e);
+          streamNativeAudio();
+        };
+
+        // Pin reference to prevent GC mid-speech in Chromium
+        currentUtteranceRef.current = utterance;
+        window.speechSynthesis.speak(utterance);
+        return;
+      } catch (e) {
+        console.warn("SpeechSynthesis speak exception:", e);
       }
-      activeAudioRef.current = audio;
-
-      audio.onended = () => {
-        activeAudioRef.current = null;
-        finishOnce();
-      };
-
-      audio.onerror = (e) => {
-        console.warn("Native TTS audio stream error, falling back to browser SpeechSynthesis:", e);
-        activeAudioRef.current = null;
-        fallbackBrowserSpeech();
-      };
-
-      const playPromise = audio.play();
-      if (playPromise !== undefined) {
-        playPromise.catch((err) => {
-          console.warn("Audio autoplay blocked, falling back to browser SpeechSynthesis:", err);
-          activeAudioRef.current = null;
-          fallbackBrowserSpeech();
-        });
-      }
-    } catch (err) {
-      fallbackBrowserSpeech();
     }
+
+    // 2. HIGH-FIDELITY FALLBACK: If browser lacks voice (e.g. Kannada/Telugu on Windows without voice pack)
+    streamNativeAudio();
   }, [speechSpeed]);
 
   // General Text-to-Speech Playback used across buttons and suggested replies
@@ -662,6 +721,8 @@ export default function App() {
     setSpeakerState('idle');
     setLiveInterimText('');
     accumulatedSpeechRef.current = '';
+    lastSubmittedPhraseRef.current = '';
+    currentUtteranceRef.current = null;
     if (speechSilenceTimerRef.current) {
       clearTimeout(speechSilenceTimerRef.current);
       speechSilenceTimerRef.current = null;
@@ -917,16 +978,19 @@ export default function App() {
       setInputText(fullTrimmed);
       setLiveInterimText(fullTrimmed);
       accumulatedSpeechRef.current = fullTrimmed;
+      setSpeakerState('transcribing');
+      liveStatusRef.current = 'transcribing';
 
       // Reset the silence debounce timer on every new speech event
       if (speechSilenceTimerRef.current) {
         clearTimeout(speechSilenceTimerRef.current);
       }
 
-      // 🎯 When user stops speaking, within ~1.8-2.0s finalize complete sentence & speak in target language
+      // 🎯 FAST SPEECH DETECTION: ~700ms silence threshold for real-time responsive voice turnaround
       speechSilenceTimerRef.current = setTimeout(() => {
         const finalPhrase = accumulatedSpeechRef.current.trim();
-        if (finalPhrase) {
+        if (finalPhrase && finalPhrase !== lastSubmittedPhraseRef.current) {
+          lastSubmittedPhraseRef.current = finalPhrase;
           accumulatedSpeechRef.current = '';
           setLiveInterimText('');
           speechSilenceTimerRef.current = null;
@@ -937,7 +1001,7 @@ export default function App() {
           liveRecognitionRef.current = null;
           processSpeakerVoice(finalPhrase);
         }
-      }, 1800);
+      }, 700);
     };
 
     sr.onerror = (e) => {
@@ -1506,6 +1570,8 @@ export default function App() {
                 className={`w-28 h-28 rounded-full flex items-center justify-center transition-all duration-300 shadow-2xl relative z-10 cursor-pointer group active:scale-95 ${
                   isLiveActive && speakerState === 'listening'
                     ? 'bg-gradient-to-tr from-rose-500 via-pink-600 to-red-600 shadow-rose-500/50 ring-4 ring-rose-400/40 animate-pulse' 
+                    : speakerState === 'transcribing'
+                    ? 'bg-gradient-to-tr from-cyan-500 via-blue-600 to-indigo-600 shadow-cyan-500/50 ring-4 ring-cyan-400/40 animate-pulse'
                     : speakerState === 'translating'
                     ? 'bg-gradient-to-tr from-amber-500 via-orange-600 to-yellow-500 shadow-amber-500/50 ring-4 ring-amber-400/40'
                     : speakerState === 'speaking'
@@ -1516,6 +1582,8 @@ export default function App() {
               >
                 {isLiveActive && speakerState === 'listening' ? (
                   <Mic className="w-12 h-12 text-white animate-bounce" />
+                ) : speakerState === 'transcribing' ? (
+                  <Mic className="w-12 h-12 text-cyan-200 animate-pulse" />
                 ) : speakerState === 'translating' ? (
                   <Sparkles className="w-12 h-12 text-white animate-spin-slow" />
                 ) : speakerState === 'speaking' ? (
@@ -1526,10 +1594,12 @@ export default function App() {
               </button>
 
               {/* State Machine Status Label */}
-              <div className="mt-4 flex flex-col items-center gap-1">
+              <div className="mt-4 flex flex-col items-center gap-1.5">
                 <span className={`text-xs font-extrabold uppercase tracking-wider px-3.5 py-1 rounded-full border ${
                   isLiveActive && speakerState === 'listening'
                     ? 'bg-rose-500/20 text-rose-300 border-rose-500/40 animate-pulse' 
+                    : speakerState === 'transcribing'
+                    ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 animate-pulse'
                     : speakerState === 'translating' 
                     ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' 
                     : speakerState === 'speaking'
@@ -1538,6 +1608,8 @@ export default function App() {
                 }`}>
                   {isLiveActive && speakerState === 'listening' 
                     ? `🟢 Listening... (${currentSpeakerTurn === 'A' ? (LANGUAGES[sourceLang !== 'auto' ? sourceLang : 'te'] || 'Telugu') : (LANGUAGES[targetLang] || 'Kannada')})`
+                    : speakerState === 'transcribing'
+                    ? '✍️ Hearing speech...'
                     : speakerState === 'translating' 
                     ? '✨ Understanding & Translating...' 
                     : speakerState === 'speaking' 
@@ -1547,12 +1619,24 @@ export default function App() {
                 <span className="text-[11px] text-slate-400 font-medium">
                   {isLiveActive && speakerState === 'listening'
                     ? `Speak naturally • Will translate & reply in ${currentSpeakerTurn === 'A' ? (LANGUAGES[targetLang] || 'Kannada') : (LANGUAGES[sourceLang !== 'auto' ? sourceLang : 'te'] || 'Telugu')}`
+                    : speakerState === 'transcribing'
+                    ? 'Transcribing your speech in real time...'
                     : speakerState === 'speaking'
                     ? 'Microphone paused so interpreter does not hear itself'
                     : isLiveActive
                     ? 'Live Interpreter running...'
                     : `Hands-free two-way conversation: ${LANGUAGES[sourceLang !== 'auto' ? sourceLang : 'te']} ⇄ ${LANGUAGES[targetLang]}`}
                 </span>
+
+                {isLiveActive && (
+                  <button
+                    onClick={stopLiveInterpretation}
+                    className="mt-1 px-4 py-1.5 rounded-full bg-rose-600/25 hover:bg-rose-600/40 border border-rose-500/50 text-rose-300 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-lg active:scale-95"
+                    title="Stop Live Two-Way Conversation"
+                  >
+                    <Square className="w-3.5 h-3.5 fill-rose-300" /> Stop Conversation
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1620,14 +1704,14 @@ export default function App() {
                   <span className="font-extrabold uppercase tracking-wide flex items-center gap-1.5 text-purple-400">
                     <Volume2 className="w-3.5 h-3.5 text-purple-400" /> TRANSLATED RESPONSE ({LANGUAGES[targetLang] || 'Target'})
                   </span>
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1.5">
                     <button
                       onClick={() => speakText(translatedText, targetLang)}
                       disabled={!translatedText}
-                      className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-purple-300 transition-colors cursor-pointer disabled:opacity-30"
-                      title="Speak Translated Voice Again"
+                      className="px-2.5 py-1 rounded-lg bg-purple-600/20 hover:bg-purple-600/40 text-purple-300 border border-purple-500/30 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-30 shadow-sm"
+                      title="Replay Voice in Target Language"
                     >
-                      <Volume2 className="w-4 h-4" />
+                      <Volume2 className="w-3.5 h-3.5 text-purple-400" /> Replay Voice
                     </button>
                     <button
                       onClick={() => handleCopy(translatedText, 'page2_trans')}
