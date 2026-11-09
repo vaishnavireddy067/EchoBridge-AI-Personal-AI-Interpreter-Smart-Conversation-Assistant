@@ -337,6 +337,7 @@ export default function App() {
   const activeAudioSourceRef = useRef(null);
   const currentUtteranceRef = useRef(null);
   const lastSubmittedPhraseRef = useRef('');
+  const isProcessingVoiceRef = useRef(false);
   const voicesRef = useRef([]);
   const [cachedVoices, setCachedVoices] = useState([]);
 
@@ -733,6 +734,7 @@ export default function App() {
     setLiveInterimText('');
     accumulatedSpeechRef.current = '';
     lastSubmittedPhraseRef.current = '';
+    isProcessingVoiceRef.current = false;
     currentUtteranceRef.current = null;
     if (speechSilenceTimerRef.current) {
       clearTimeout(speechSilenceTimerRef.current);
@@ -760,7 +762,11 @@ export default function App() {
   }, []);
 
   const processSpeakerVoice = useCallback(async (spokenPhrase, forceInputLang = null, forceTargetLang = null) => {
-    if (!spokenPhrase || !spokenPhrase.trim()) return;
+    if (!spokenPhrase || !spokenPhrase.trim()) {
+      isProcessingVoiceRef.current = false;
+      return;
+    }
+    isProcessingVoiceRef.current = true;
     
     const pairLangA = (sourceLang !== 'auto' ? sourceLang : (speakerInputLang || 'te'));
     const pairLangB = (targetLang !== 'auto' ? targetLang : (speakerTargetLang || 'kn'));
@@ -931,6 +937,9 @@ export default function App() {
 
     // 🔊 AUTOMATIC MANDATORY TEXT-TO-SPEECH PLAYBACK IN CONVERTED LANGUAGE (tLang)
     playAudioSpeech(translated, tLang, () => {
+      // Release lock so next speaker turn can proceed cleanly
+      isProcessingVoiceRef.current = false;
+
       // Toggle 2-way turn for the next speaker
       const nextTurn = currentSpeakerTurnRef.current === 'A' ? 'B' : 'A';
       currentSpeakerTurnRef.current = nextTurn;
@@ -939,12 +948,12 @@ export default function App() {
       if (isLiveActiveRef.current) {
         setSpeakerState('listening');
         liveStatusRef.current = 'listening';
-        // ⏳ 300ms silence delay so microphone does NOT hear the device's own audio
+        // ⏳ 350ms silence delay so microphone does NOT hear the device's own audio
         setTimeout(() => {
           if (isLiveActiveRef.current && startLiveTurnRef.current) {
             startLiveTurnRef.current();
           }
-        }, 300);
+        }, 350);
       } else {
         setSpeakerState('idle');
         liveStatusRef.current = 'idle';
@@ -982,13 +991,12 @@ export default function App() {
     };
 
     sr.onresult = (e) => {
+      // Guard against duplicate processing while a turn is already executing/speaking
+      if (isProcessingVoiceRef.current) return;
+
       let currentSessionText = '';
-      let hasFinal = false;
       for (let i = 0; i < e.results.length; i++) {
         currentSessionText += e.results[i][0].transcript + ' ';
-        if (e.results[i].isFinal) {
-          hasFinal = true;
-        }
       }
       const fullTrimmed = currentSessionText.trim();
       if (!fullTrimmed) return;
@@ -1000,17 +1008,23 @@ export default function App() {
       setSpeakerState('transcribing');
       liveStatusRef.current = 'transcribing';
 
+      // Check whether ONLY the latest speech segment is marked final
+      const isLatestFinal = e.results[e.results.length - 1]?.isFinal;
+
       // Reset the silence debounce timer on every new speech event
       if (speechSilenceTimerRef.current) {
         clearTimeout(speechSilenceTimerRef.current);
       }
 
-      // 🎯 ULTRA-FAST SPEECH DETECTION: When Chrome marks isFinal, respond in ~300ms! If interim, wait 500ms!
-      const silenceDelay = hasFinal ? 300 : 500;
+      // 🎯 Responsive Turnaround: 750ms after sentence completion avoids cutting off natural pauses
+      const silenceDelay = isLatestFinal ? 750 : 1200;
 
       speechSilenceTimerRef.current = setTimeout(() => {
+        if (isProcessingVoiceRef.current) return;
+
         const finalPhrase = accumulatedSpeechRef.current.trim();
         if (finalPhrase && finalPhrase !== lastSubmittedPhraseRef.current) {
+          isProcessingVoiceRef.current = true;
           lastSubmittedPhraseRef.current = finalPhrase;
           accumulatedSpeechRef.current = '';
           setLiveInterimText('');
@@ -1018,7 +1032,7 @@ export default function App() {
           // Set state to translating BEFORE stopping recognition so sr.onend does not auto-restart!
           liveStatusRef.current = 'translating';
           setSpeakerState('translating');
-          try { sr.stop(); } catch (err) {}
+          try { sr.abort(); } catch (err) {}
           liveRecognitionRef.current = null;
           processSpeakerVoice(finalPhrase);
         }
