@@ -8,7 +8,7 @@ import sqlite3
 import urllib.request
 import urllib.parse
 from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from langdetect import detect, DetectorFactory
@@ -543,6 +543,45 @@ def toggle_favorite(item_id: str):
     conn.commit()
     conn.close()
     return {"id": item_id, "favorite": bool(new_fav)}
+
+# --- HIGH-FIDELITY LIVE VOICE TTS AUDIO STREAM ENDPOINT ---
+@app.get("/api/tts")
+def text_to_speech_audio(text: str, lang: str = "en"):
+    """
+    High-fidelity native voice TTS endpoint.
+    Streams native audio for Telugu, Kannada, Hindi, Tamil, English, and all languages.
+    Completely eliminates browser-dependent missing language packs and synthesis cancellation.
+    """
+    cleaned = text.strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Text cannot be empty")
+    
+    tl = (lang or 'en').lower().split('-')[0]
+    if lang.lower() == 'zh-cn' or lang.lower() == 'zh':
+        tl = 'zh-CN'
+    
+    # Strip wrapping quotes
+    if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
+        cleaned = cleaned[1:-1].strip()
+
+    try:
+        url = "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=" + urllib.parse.quote(tl) + "&q=" + urllib.parse.quote(cleaned)
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            audio_bytes = resp.read()
+            
+        return Response(content=audio_bytes, media_type="audio/mpeg", headers={
+            "Cache-Control": "public, max-age=86400",
+            "Content-Disposition": "inline"
+        })
+    except Exception as e:
+        print(f"[TTS Audio Error] {e}")
+        raise HTTPException(status_code=500, detail=f"TTS generation error: {str(e)}")
 
 @app.get("/api/analytics")
 def get_analytics():

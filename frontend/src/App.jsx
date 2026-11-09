@@ -331,6 +331,7 @@ export default function App() {
   const startLiveTurnRef = useRef(null);
   const accumulatedSpeechRef = useRef('');
   const speechSilenceTimerRef = useRef(null);
+  const activeAudioRef = useRef(null);
 
   // Sync refs with reactive state
   useEffect(() => {
@@ -380,38 +381,97 @@ export default function App() {
     }, duration);
   };
 
-  // Text-to-Speech Playback with Native Voice Matching & Callback
-  const speakText = useCallback((text, langCode, onEndCallback = null) => {
-    if (!text || typeof window === 'undefined' || !window.speechSynthesis) {
+  // High-fidelity Native Audio Stream + Browser SpeechSynthesis fallback
+  const playAudioSpeech = useCallback((text, langCode, onEndCallback = null) => {
+    if (!text || !text.trim()) {
       if (onEndCallback) onEndCallback();
       return;
     }
-    window.speechSynthesis.cancel();
+
+    let finished = false;
+    const finishOnce = () => {
+      if (finished) return;
+      finished = true;
+      setIsSpeaking(false);
+      if (onEndCallback) onEndCallback();
+    };
+
     setIsSpeaking(true);
 
-    const utterance = new SpeechSynthesisUtterance(text);
-    const bcp47 = SPEECH_LANGS[langCode]?.code || (langCode === 'kn' ? 'kn-IN' : langCode === 'te' ? 'te-IN' : langCode === 'hi' ? 'hi-IN' : langCode === 'ta' ? 'ta-IN' : 'en-US');
-    utterance.lang = bcp47;
-    utterance.rate = speechSpeed || 1.0;
+    const fallbackBrowserSpeech = () => {
+      if (typeof window === 'undefined' || !window.speechSynthesis) {
+        finishOnce();
+        return;
+      }
+      try { window.speechSynthesis.cancel(); } catch (e) {}
 
-    const voices = window.speechSynthesis.getVoices();
-    if (voices && voices.length > 0) {
-      const match = voices.find(v => v.lang === bcp47 || v.lang.replace('_', '-') === bcp47 || v.lang.startsWith(langCode));
-      if (match) utterance.voice = match;
+      setTimeout(() => {
+        const utterance = new SpeechSynthesisUtterance(text);
+        const bcp47 = SPEECH_LANGS[langCode]?.code || (langCode === 'kn' ? 'kn-IN' : langCode === 'te' ? 'te-IN' : langCode === 'hi' ? 'hi-IN' : langCode === 'ta' ? 'ta-IN' : 'en-US');
+        utterance.lang = bcp47;
+        utterance.rate = speechSpeed || 1.0;
+
+        const voices = window.speechSynthesis.getVoices();
+        if (voices && voices.length > 0) {
+          const match = voices.find(v => v.lang === bcp47 || v.lang.replace('_', '-') === bcp47 || v.lang.startsWith(langCode));
+          if (match) utterance.voice = match;
+        }
+
+        utterance.onend = finishOnce;
+        utterance.onerror = (e) => {
+          console.warn("SpeechSynthesis error:", e);
+          finishOnce();
+        };
+
+        try {
+          window.speechSynthesis.speak(utterance);
+        } catch (err) {
+          finishOnce();
+        }
+      }, 50);
+    };
+
+    // 1. Try High-Fidelity Native TTS Stream from backend first (100% authentic pronunciation for Indic & global languages)
+    try {
+      const audioUrl = `http://127.0.0.1:8000/api/tts?lang=${encodeURIComponent(langCode || 'en')}&text=${encodeURIComponent(text)}`;
+      const audio = new Audio(audioUrl);
+
+      if (activeAudioRef.current) {
+        try {
+          activeAudioRef.current.pause();
+          activeAudioRef.current.currentTime = 0;
+        } catch (e) {}
+      }
+      activeAudioRef.current = audio;
+
+      audio.onended = () => {
+        activeAudioRef.current = null;
+        finishOnce();
+      };
+
+      audio.onerror = (e) => {
+        console.warn("Native TTS audio stream error, falling back to browser SpeechSynthesis:", e);
+        activeAudioRef.current = null;
+        fallbackBrowserSpeech();
+      };
+
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          console.warn("Audio autoplay blocked, falling back to browser SpeechSynthesis:", err);
+          activeAudioRef.current = null;
+          fallbackBrowserSpeech();
+        });
+      }
+    } catch (err) {
+      fallbackBrowserSpeech();
     }
-
-    utterance.onend = () => {
-      setIsSpeaking(false);
-      if (onEndCallback) onEndCallback();
-    };
-    utterance.onerror = (e) => {
-      console.warn("SpeechSynthesis playback notice:", e);
-      setIsSpeaking(false);
-      if (onEndCallback) onEndCallback();
-    };
-
-    window.speechSynthesis.speak(utterance);
   }, [speechSpeed]);
+
+  // General Text-to-Speech Playback used across buttons and suggested replies
+  const speakText = useCallback((text, langCode, onEndCallback = null) => {
+    playAudioSpeech(text, langCode, onEndCallback);
+  }, [playAudioSpeech]);
 
   // AI Feature: Smart Suggested Replies (Scenario-Aware)
   const fetchSmartReplies = useCallback(async (phrase, targetLangCode, convHistory = null, scenarioOverride = null) => {
@@ -612,6 +672,13 @@ export default function App() {
     if (speakerRecognitionRef.current) {
       try { speakerRecognitionRef.current.abort(); } catch (e) {}
     }
+    if (activeAudioRef.current) {
+      try {
+        activeAudioRef.current.pause();
+        activeAudioRef.current.currentTime = 0;
+      } catch (e) {}
+      activeAudioRef.current = null;
+    }
     window.speechSynthesis.cancel();
     showToast("Live Interpreter Paused");
   }, []);
@@ -786,22 +853,8 @@ export default function App() {
     // Fetch smart reply suggestions adapted to scenario
     fetchSmartReplies(translated, tLang, null, selectedScenario);
 
-    // 🔊 AUTOMATIC MANDATORY TEXT-TO-SPEECH PLAYBACK
-    // Stop any existing speech synthesis before speaking new output
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(translated);
-    const bcp47 = SPEECH_LANGS[tLang]?.code || (tLang === 'kn' ? 'kn-IN' : tLang === 'te' ? 'te-IN' : tLang === 'hi' ? 'hi-IN' : tLang === 'ta' ? 'ta-IN' : 'en-US');
-    utterance.lang = bcp47;
-    utterance.rate = speechSpeed || 1.0;
-
-    // Pick matching browser native voice if available
-    const voices = window.speechSynthesis.getVoices();
-    if (voices && voices.length > 0) {
-      const match = voices.find(v => v.lang === bcp47 || v.lang.replace('_', '-') === bcp47 || v.lang.startsWith(tLang));
-      if (match) utterance.voice = match;
-    }
-
-    utterance.onend = () => {
+    // 🔊 AUTOMATIC MANDATORY TEXT-TO-SPEECH PLAYBACK IN CONVERTED LANGUAGE (tLang)
+    playAudioSpeech(translated, tLang, () => {
       // Toggle 2-way turn for the next speaker
       const nextTurn = currentSpeakerTurnRef.current === 'A' ? 'B' : 'A';
       currentSpeakerTurnRef.current = nextTurn;
@@ -810,40 +863,18 @@ export default function App() {
       if (isLiveActiveRef.current) {
         setSpeakerState('listening');
         liveStatusRef.current = 'listening';
-        // ⏳ 250ms silence delay so microphone does NOT hear the device's own audio
+        // ⏳ 300ms silence delay so microphone does NOT hear the device's own audio
         setTimeout(() => {
           if (isLiveActiveRef.current && startLiveTurnRef.current) {
             startLiveTurnRef.current();
           }
-        }, 250);
+        }, 300);
       } else {
         setSpeakerState('idle');
         liveStatusRef.current = 'idle';
       }
-    };
-
-    utterance.onerror = (e) => {
-      console.warn("TTS playback notice:", e);
-      const nextTurn = currentSpeakerTurnRef.current === 'A' ? 'B' : 'A';
-      currentSpeakerTurnRef.current = nextTurn;
-      setCurrentSpeakerTurn(nextTurn);
-
-      if (isLiveActiveRef.current) {
-        setSpeakerState('listening');
-        liveStatusRef.current = 'listening';
-        setTimeout(() => {
-          if (isLiveActiveRef.current && startLiveTurnRef.current) {
-            startLiveTurnRef.current();
-          }
-        }, 250);
-      } else {
-        setSpeakerState('idle');
-        liveStatusRef.current = 'idle';
-      }
-    };
-
-    window.speechSynthesis.speak(utterance);
-  }, [sourceLang, targetLang, speakerInputLang, speakerTargetLang, isEffectivelyOffline, history, speechSpeed, fetchSmartReplies, selectedScenario]);
+    });
+  }, [sourceLang, targetLang, speakerInputLang, speakerTargetLang, isEffectivelyOffline, history, speechSpeed, fetchSmartReplies, selectedScenario, playAudioSpeech]);
 
   // Start a single listening turn in the continuous loop
   const startLiveTurn = useCallback(() => {
@@ -899,7 +930,9 @@ export default function App() {
           accumulatedSpeechRef.current = '';
           setLiveInterimText('');
           speechSilenceTimerRef.current = null;
-          // Stop recognition BEFORE processing & speaking so mic never hears TTS!
+          // Set state to translating BEFORE stopping recognition so sr.onend does not auto-restart!
+          liveStatusRef.current = 'translating';
+          setSpeakerState('translating');
           try { sr.stop(); } catch (err) {}
           liveRecognitionRef.current = null;
           processSpeakerVoice(finalPhrase);
