@@ -275,6 +275,26 @@ SEMANTIC_MEANINGS = {
             'kn': 'ನಾನು ಆಗಾಗ್ಗೆ ಪ್ರಯಾಣಿಸುವುದರಿಂದ ಹೊಸ ಭಾಷೆಯನ್ನು ಕಲಿಯಲು ಬಯಸುತ್ತೇನೆ.'
         },
         'detected_code': 'en'
+    },
+    'meeting_late_please_wait': {
+        'sources': [
+            'meeting ki late avutunna, please wait cheyyi',
+            'meeting ki late avutunna please wait cheyyi',
+            'meeting ki late avutunna, please wait chey',
+            'meeting ki late avutunna please wait chey',
+            'meeting ki late avtundi please wait chey',
+            'meeting ki late avutunnanu please wait cheyyandi',
+            'మీటింగ్‌కి లేట్ అవుతున్నా ప్లీజ్ వెయిట్ చెయ్యి',
+            'మీటింగ్‌కి లేట్ అవుతున్నాను ప్లీజ్ వెయిట్ చెయ్యండి'
+        ],
+        'translations': {
+            'hi': 'मुझे मीटिंग के लिए देर हो रही है, कृपया प्रतीक्षा करें।',
+            'en': 'I am running late for the meeting, please wait.',
+            'te': 'మీటింగ్‌కి ఆలస్యం అవుతున్నాను, దయచేసి వేచి ఉండండి.',
+            'kn': 'ನಾನು ಸಭೆಗೆ ತಡವಾಗಿ ಬರುತ್ತಿದ್ದೇನೆ, ದಯವಿಟ್ಟು ಕಾಯಿರಿ.',
+            'ta': 'நான் கூட்டத்திற்கு தாமதமாக வருகிறேன், தயவுசெய்து காத்திருங்கள்.'
+        },
+        'detected_code': 'te'
     }
 }
 
