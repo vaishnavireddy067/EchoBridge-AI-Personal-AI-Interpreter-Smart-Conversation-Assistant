@@ -219,6 +219,7 @@ export default function App() {
   const [liveInterimText, setLiveInterimText] = useState('');
   const [twoWayAutoSwitch, setTwoWayAutoSwitch] = useState(true);
   const [currentSpeakerTurn, setCurrentSpeakerTurn] = useState('A'); // 'A' (e.g. te) | 'B' (e.g. hi)
+  const [lastSpeakerTurn, setLastSpeakerTurn] = useState('A');
   const [liveSessionLog, setLiveSessionLog] = useState([]);
 
   // AI Features State
@@ -341,8 +342,14 @@ export default function App() {
   const isProcessingVoiceRef = useRef(false);
   const finalizedHistoryRef = useRef('');
   const sessionFinalRef = useRef('');
-  const [silenceThreshold, setSilenceThreshold] = useState(1000);
-  const silenceThresholdRef = useRef(1000);
+  const finalTranscriptRef = useRef('');
+  const interimTranscriptRef = useRef('');
+  const utteranceBufferRef = useRef('');
+  const activeTTSIdRef = useRef(0);
+  const activeTranslationRequestIdRef = useRef(0);
+  const selectedVoiceCacheRef = useRef({});
+  const [silenceThreshold, setSilenceThreshold] = useState(1500);
+  const silenceThresholdRef = useRef(1500);
   const finalizeUtteranceRef = useRef(null);
   const voicesRef = useRef([]);
   const [cachedVoices, setCachedVoices] = useState([]);
@@ -465,25 +472,52 @@ export default function App() {
     };
   }, [unlockAudio]);
 
-  // Fast Voice Matching & Speech Playback Pipeline (HTML5 Stream + Web Audio API + SpeechSynthesis Fallback)
-  const playAudioSpeech = useCallback(async (text, langCode, onEndCallback = null) => {
+  // =========================================================================
+  // 🎙️ CENTRALIZED SINGLE TTS CONTROLLER
+  // Guarantees EXACTLY ONE audio playback per sentence, eliminates overlapping voices,
+  // cancels any prior speech, selects ONE voice, and logs the full lifecycle.
+  // =========================================================================
+  const speakTranslatedSentence = useCallback(async (text, langCode, onEndCallback = null) => {
     if (!text || !text.trim()) {
       if (onEndCallback) onEndCallback();
       return;
     }
 
-    let finished = false;
-    const finishOnce = () => {
-      if (finished) return;
-      finished = true;
-      setIsSpeaking(false);
-      currentUtteranceRef.current = null;
-      activeAudioSourceRef.current = null;
-      if (activeAudioRef.current) {
-        activeAudioRef.current = null;
-      }
+    const cleanText = text.replace(/^["']|["']$/g, '').trim();
+    if (!cleanText) {
       if (onEndCallback) onEndCallback();
-    };
+      return;
+    }
+
+    // Generate unique utteranceId for this specific translation request
+    const utteranceId = ++activeTTSIdRef.current;
+
+    // 1. CANCEL ANY EXISTING SPEECH FIRST (Eliminates dual voices and overlapping playback)
+    try {
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    } catch (e) {}
+
+    if (activeAudioRef.current) {
+      try {
+        activeAudioRef.current.pause();
+        activeAudioRef.current.currentTime = 0;
+      } catch (e) {}
+      activeAudioRef.current = null;
+    }
+    if (audioPlayerRef.current) {
+      try {
+        audioPlayerRef.current.pause();
+        audioPlayerRef.current.currentTime = 0;
+      } catch (e) {}
+    }
+
+    // Brief 35ms pause to ensure browser audio pipeline cancellation is fully processed
+    await new Promise(res => setTimeout(res, 35));
+    if (activeTTSIdRef.current !== utteranceId) {
+      return; // A newer translation request has arrived
+    }
 
     setIsSpeaking(true);
     setSpeakerState('speaking');
@@ -498,85 +532,86 @@ export default function App() {
       langCode === 'es' ? 'es-ES' : 'en-US'
     );
     const prefix = (langCode || 'en').toLowerCase().split('-')[0];
+
+    // Voice Selection: Search installed browser voices
     const available = voicesRef.current.length > 0 ? voicesRef.current : (window.speechSynthesis?.getVoices() || []);
-    const cleanText = text.replace(/^["']|["']$/g, '').trim();
+    let matchingVoice = selectedVoiceCacheRef.current[langCode];
 
-    // Helper: Browser SpeechSynthesis Fallback
-    const trySpeechSynthesisFallback = () => {
+    if (!matchingVoice) {
+      matchingVoice = available.find(v => v.lang.replace('_', '-').toLowerCase() === bcp47.toLowerCase());
+      if (!matchingVoice) {
+        matchingVoice = available.find(v => v.lang.toLowerCase().startsWith(prefix));
+      }
+      if (matchingVoice) {
+        selectedVoiceCacheRef.current[langCode] = matchingVoice;
+      }
+    }
+
+    const voiceName = matchingVoice ? matchingVoice.name : 'Native Neural Audio Stream';
+    const voiceLang = matchingVoice ? matchingVoice.lang : bcp47;
+
+    // Required Debug Logging
+    console.log(`[TTS CONTROLLER] -----------------------------------------`);
+    console.log(`[TTS CONTROLLER] Utterance ID: ${utteranceId}`);
+    console.log(`[TTS CONTROLLER] Selected voice name: ${voiceName}`);
+    console.log(`[TTS CONTROLLER] Selected voice language: ${voiceLang}`);
+    console.log(`[TTS CONTROLLER] Translated text: "${cleanText}"`);
+
+    let speechEnded = false;
+    const handleSpeechEnd = () => {
+      if (speechEnded) return;
+      speechEnded = true;
+      console.log(`[TTS CONTROLLER] TTS end: ${utteranceId}`);
+
+      if (activeTTSIdRef.current === utteranceId) {
+        setIsSpeaking(false);
+        currentUtteranceRef.current = null;
+        activeAudioRef.current = null;
+        if (onEndCallback) onEndCallback();
+      }
+    };
+
+    // SINGLE PLAYBACK PATH DECISION:
+    // If the browser has an exact installed voice, use SpeechSynthesis.
+    // If no voice exists in the OS (like Telugu/Kannada on standard Windows), use the high-fidelity native stream.
+    // THEY NEVER RUN SIMULTANEOUSLY! EXACTLY ONE VOICE PLAYS.
+    const hasInstalledVoice = matchingVoice && (
+      matchingVoice.lang.toLowerCase().startsWith(prefix) || 
+      matchingVoice.lang.replace('_', '-').toLowerCase() === bcp47.toLowerCase()
+    );
+
+    if (hasInstalledVoice && typeof window !== 'undefined' && window.speechSynthesis) {
       try {
-        if (typeof window !== 'undefined' && window.speechSynthesis) {
-          let matchingVoice = available.find(v => v.lang.replace('_', '-').toLowerCase() === bcp47.toLowerCase());
-          if (!matchingVoice) {
-            matchingVoice = available.find(v => v.lang.toLowerCase().startsWith(prefix));
-          }
-
-          if (window.speechSynthesis.paused) {
-            window.speechSynthesis.resume();
-          }
-
-          const utterance = new SpeechSynthesisUtterance(cleanText);
-          utterance.lang = bcp47;
-          if (matchingVoice) utterance.voice = matchingVoice;
-          utterance.rate = speechSpeed || 1.0;
-
-          utterance.onstart = () => {
-            setSpeakerState('speaking');
-            liveStatusRef.current = 'speaking';
-          };
-          utterance.onend = finishOnce;
-          utterance.onerror = (e) => {
-            console.warn("SpeechSynthesis error:", e);
-            finishOnce();
-          };
-
-          currentUtteranceRef.current = utterance;
-          window.speechSynthesis.speak(utterance);
-          return;
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
         }
+
+        const utterance = new SpeechSynthesisUtterance(cleanText);
+        utterance.voice = matchingVoice;
+        utterance.lang = bcp47;
+        utterance.rate = speechSpeed || 1.0;
+
+        utterance.onstart = () => {
+          console.log(`[TTS CONTROLLER] TTS start: ${utteranceId} (SpeechSynthesis)`);
+        };
+        utterance.onend = handleSpeechEnd;
+        utterance.onerror = (e) => {
+          console.warn(`[TTS CONTROLLER] SpeechSynthesis notice for ${utteranceId}:`, e);
+          handleSpeechEnd();
+        };
+
+        currentUtteranceRef.current = utterance;
+        window.speechSynthesis.speak(utterance);
+        return;
       } catch (synthErr) {
-        console.warn("SpeechSynthesis fallback error:", synthErr);
+        console.warn(`[TTS CONTROLLER] SpeechSynthesis error, using native stream:`, synthErr);
       }
-      finishOnce();
-    };
+    }
 
-    // Helper: Web Audio API Buffer Playback
-    const tryWebAudioFallback = () => {
-      try {
-        unlockAudio();
-        if (audioContextRef.current) {
-          const ttsUrl = `http://127.0.0.1:8000/api/tts?lang=${encodeURIComponent(prefix)}&text=${encodeURIComponent(cleanText)}`;
-          fetch(ttsUrl)
-            .then(res => {
-              if (!res.ok) throw new Error("TTS fetch failed");
-              return res.arrayBuffer();
-            })
-            .then(buf => audioContextRef.current.decodeAudioData(buf))
-            .then(audioBuffer => {
-              if (activeAudioSourceRef.current) {
-                try { activeAudioSourceRef.current.stop(); } catch (e) {}
-              }
-              const source = audioContextRef.current.createBufferSource();
-              source.buffer = audioBuffer;
-              source.connect(audioContextRef.current.destination);
-              source.onended = finishOnce;
-              activeAudioSourceRef.current = source;
-              source.start(0);
-            })
-            .catch(() => trySpeechSynthesisFallback());
-          return;
-        }
-      } catch (err) {
-        console.warn("WebAudio fallback error:", err);
-      }
-      trySpeechSynthesisFallback();
-    };
-
-    // 1. PRIMARY: Direct HTML5 Audio Streaming from /api/tts via DOM Element
-    // Streams native human voice audio for Telugu, Kannada, Hindi, Tamil, English, etc.
+    // High-Fidelity Native Audio Stream for Indian Languages
     try {
       const ttsUrl = `http://127.0.0.1:8000/api/tts?lang=${encodeURIComponent(prefix)}&text=${encodeURIComponent(cleanText)}`;
-      
-      const audioEl = audioPlayerRef.current || activeAudioRef.current || new Audio();
+      const audioEl = audioPlayerRef.current || new Audio();
       activeAudioRef.current = audioEl;
 
       audioEl.pause();
@@ -584,32 +619,30 @@ export default function App() {
       audioEl.src = ttsUrl;
       audioEl.playbackRate = speechSpeed || 1.0;
 
-      audioEl.onended = () => {
-        finishOnce();
+      audioEl.onplay = () => {
+        console.log(`[TTS CONTROLLER] TTS start: ${utteranceId} (Native Stream)`);
       };
-
+      audioEl.onended = handleSpeechEnd;
       audioEl.onerror = (e) => {
-        console.warn("HTML5 audio stream error, falling back to Web Audio / SpeechSynthesis:", e);
-        tryWebAudioFallback();
+        console.warn(`[TTS CONTROLLER] Native audio stream notice for ${utteranceId}:`, e);
+        handleSpeechEnd();
       };
 
       const playPromise = audioEl.play();
       if (playPromise !== undefined) {
         playPromise.catch((playErr) => {
-          console.warn("HTML5 play() restricted, attempting WebAudio fallback:", playErr);
-          tryWebAudioFallback();
+          console.warn(`[TTS CONTROLLER] audioEl.play() notice:`, playErr);
+          handleSpeechEnd();
         });
       }
-    } catch (e) {
-      console.warn("Direct audio stream instantiation error:", e);
-      tryWebAudioFallback();
+    } catch (streamErr) {
+      console.warn(`[TTS CONTROLLER] Native Stream exception:`, streamErr);
+      handleSpeechEnd();
     }
-  }, [speechSpeed, unlockAudio]);
+  }, [speechSpeed]);
 
-  // General Text-to-Speech Playback used across buttons and suggested replies
-  const speakText = useCallback((text, langCode, onEndCallback = null) => {
-    playAudioSpeech(text, langCode, onEndCallback);
-  }, [playAudioSpeech]);
+  const playAudioSpeech = speakTranslatedSentence;
+  const speakText = speakTranslatedSentence;
 
   // AI Feature: Smart Suggested Replies (Scenario-Aware)
   const fetchSmartReplies = useCallback(async (phrase, targetLangCode, convHistory = null, scenarioOverride = null) => {
@@ -640,8 +673,14 @@ export default function App() {
     }
   }, [selectedScenario]);
 
-  // Instant Smart Translation
+  // Instant Smart Translation (Used only for manual text input / typing)
   const performTranslation = useCallback(async (text, sl, tl, tone = 'default', saveToHistory = false) => {
+    // When Live Interpreter is active, speech recognition pipeline manages its own lifecycle!
+    // NEVER translate or auto-speak background typing while live microphone is active!
+    if (isLiveActiveRef.current) {
+      return;
+    }
+
     if (!text || !text.trim()) {
       setTranslatedText('');
       setTransliteratedScript(null);
@@ -684,7 +723,7 @@ export default function App() {
           setHistory(prev => [newItem, ...prev.filter(p => p.original_text !== text)]);
         }
 
-        if (autoSpeak && off.translated_text) {
+        if (saveToHistory && autoSpeak && !isLiveActiveRef.current && off.translated_text) {
           speakText(off.translated_text, tl);
         }
         return;
@@ -737,7 +776,8 @@ export default function App() {
         setHistory(prev => [newItem, ...prev.filter(p => p.original_text !== text)]);
       }
 
-      if (autoSpeak && data.translated_text) {
+      // ONLY speak if user explicitly clicked Send/Submit (saveToHistory=true) AND autoSpeak=true AND NOT live interpreting!
+      if (saveToHistory && autoSpeak && !isLiveActiveRef.current && data.translated_text) {
         speakText(data.translated_text, data.target_lang);
       }
     } catch (e) {
@@ -749,14 +789,15 @@ export default function App() {
     }
   }, [autoSpeak, isEffectivelyOffline, history, selectedScenario, fetchSmartReplies]);
 
-  // Debounced translation as user types
+  // Debounced translation as user manually types (only when live listening is inactive)
   useEffect(() => {
+    if (isLiveActive) return;
     const timer = setTimeout(() => {
       performTranslation(inputText, sourceLang, targetLang, selectedTone, false);
-    }, 280);
+    }, 450);
 
     return () => clearTimeout(timer);
-  }, [inputText, sourceLang, targetLang, selectedTone, performTranslation]);
+  }, [inputText, sourceLang, targetLang, selectedTone, isLiveActive, performTranslation]);
 
   // General Speech Recognition Setup
   useEffect(() => {
@@ -803,6 +844,11 @@ export default function App() {
     lastSubmittedPhraseRef.current = '';
     finalizedHistoryRef.current = '';
     sessionFinalRef.current = '';
+    finalTranscriptRef.current = '';
+    interimTranscriptRef.current = '';
+    utteranceBufferRef.current = '';
+    activeTTSIdRef.current++;
+    activeTranslationRequestIdRef.current++;
     isProcessingVoiceRef.current = false;
     currentUtteranceRef.current = null;
     if (speechSilenceTimerRef.current) {
@@ -811,9 +857,11 @@ export default function App() {
     }
     if (liveRecognitionRef.current) {
       try { liveRecognitionRef.current.abort(); } catch (e) {}
+      liveRecognitionRef.current = null;
     }
     if (speakerRecognitionRef.current) {
       try { speakerRecognitionRef.current.abort(); } catch (e) {}
+      speakerRecognitionRef.current = null;
     }
     if (activeAudioSourceRef.current) {
       try { activeAudioSourceRef.current.stop(); } catch (e) {}
@@ -826,7 +874,11 @@ export default function App() {
       } catch (e) {}
       activeAudioRef.current = null;
     }
-    window.speechSynthesis.cancel();
+    try {
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    } catch (e) {}
     showToast("Live Interpreter Paused");
   }, []);
 
@@ -837,14 +889,21 @@ export default function App() {
     }
     isProcessingVoiceRef.current = true;
     
-    // In Live Mode: Always translate into the user's selected targetLang!
-    let sLang = forceInputLang || (sourceLang !== 'auto' ? sourceLang : 'auto');
-    let tLang = forceTargetLang || (targetLang !== 'auto' ? targetLang : (speakerTargetLang || 'en'));
+    // In Live Mode: determine current speaker turn and appropriate language pair
+    const turn = currentSpeakerTurnRef.current || 'A';
+    setLastSpeakerTurn(turn);
+    const langA = speakerInputLang || 'te';
+    const langB = speakerTargetLang || 'hi';
+
+    let sLang = forceInputLang || (turn === 'A' ? langA : langB);
+    let tLang = forceTargetLang || (turn === 'A' ? langB : langA);
 
     setSpeakerState('translating');
     liveStatusRef.current = 'translating';
     setSpeakerHeardText(spokenPhrase);
     setInputText(spokenPhrase);
+
+    const requestId = ++activeTranslationRequestIdRef.current;
 
     let translated = '';
     let translitScript = null;
@@ -871,6 +930,11 @@ export default function App() {
           })
         });
 
+        if (activeTranslationRequestIdRef.current !== requestId) {
+          // Newer translation in flight; discard stale result
+          return;
+        }
+
         if (resp.ok) {
           const data = await resp.json();
           translated = data.translated_text;
@@ -879,9 +943,9 @@ export default function App() {
           engineUsed = data.engine || 'cloud';
           codeMixedType = data.code_mixed_type;
 
-          // Prevent translating into the exact same language
+          // Prevent translating into the exact same language (e.g. if reverse detected)
           if (data.detected_code && data.detected_code === tLang) {
-            const reversedTarget = (tLang === pairLangA ? pairLangB : pairLangA);
+            const reversedTarget = (tLang === langA ? langB : langA);
             try {
               const revResp = await fetch('http://127.0.0.1:8000/api/translate', {
                 method: 'POST',
@@ -893,7 +957,7 @@ export default function App() {
                   scenario: selectedScenario
                 })
               });
-              if (revResp.ok) {
+              if (revResp.ok && activeTranslationRequestIdRef.current === requestId) {
                 const revData = await revResp.json();
                 translated = revData.translated_text;
                 translitScript = revData.transliterated_script;
@@ -918,6 +982,10 @@ export default function App() {
       }
     }
 
+    if (activeTranslationRequestIdRef.current !== requestId) {
+      return;
+    }
+
     // Update state for Page 2 and Page 3
     setTranslatedText(translated);
     setSpeakerResponseText(translated);
@@ -936,7 +1004,7 @@ export default function App() {
       translated: translated,
       sourceLang: sLang,
       targetLang: tLang,
-      speaker: currentSpeakerTurnRef.current === 'A' ? `Person A (${LANGUAGES[sLang] || sLang})` : `Person B (${LANGUAGES[sLang] || sLang})`,
+      speaker: turn === 'A' ? `Person A (${LANGUAGES[sLang] || sLang})` : `Person B (${LANGUAGES[sLang] || sLang})`,
       scenario: selectedScenario,
       codeMixedType: codeMixedType,
       engine: engineUsed
@@ -958,29 +1026,34 @@ export default function App() {
     };
     setHistory(prev => [newItem, ...prev]);
 
-    // Fetch smart reply suggestions adapted to scenario
-    fetchSmartReplies(translated, tLang, null, selectedScenario);
-
     // 🔊 AUTOMATIC MANDATORY TEXT-TO-SPEECH PLAYBACK IN CONVERTED LANGUAGE (tLang)
-    playAudioSpeech(translated, tLang, () => {
+    speakTranslatedSentence(translated, tLang, () => {
       // Release lock so next speech turn can proceed cleanly
       isProcessingVoiceRef.current = false;
 
       if (isLiveActiveRef.current) {
+        // Automatically alternate speaker turn for continuous hands-free two-way conversation!
+        if (twoWayAutoSwitchRef.current) {
+          const nextTurn = (turn === 'A' ? 'B' : 'A');
+          currentSpeakerTurnRef.current = nextTurn;
+          setCurrentSpeakerTurn(nextTurn);
+        }
+
         setSpeakerState('listening');
         liveStatusRef.current = 'listening';
-        // ⏳ 350ms silence delay so microphone does NOT hear the device's own audio
+
+        // ⏳ 400ms silence delay so microphone does NOT hear the device's own audio
         setTimeout(() => {
-          if (isLiveActiveRef.current && startLiveTurnRef.current) {
+          if (isLiveActiveRef.current && !isProcessingVoiceRef.current && startLiveTurnRef.current) {
             startLiveTurnRef.current();
           }
-        }, 350);
+        }, 400);
       } else {
         setSpeakerState('idle');
         liveStatusRef.current = 'idle';
       }
     });
-  }, [sourceLang, targetLang, speakerInputLang, speakerTargetLang, isEffectivelyOffline, history, speechSpeed, fetchSmartReplies, selectedScenario, playAudioSpeech]);
+  }, [speakerInputLang, speakerTargetLang, isEffectivelyOffline, history, selectedScenario, speakTranslatedSentence]);
 
   // Sentence Completion & Dispatch: submits only after complete utterance
   const finalizeAndSubmitUtterance = useCallback(() => {
@@ -990,18 +1063,30 @@ export default function App() {
       speechSilenceTimerRef.current = null;
     }
 
-    const finalPhrase = (accumulatedSpeechRef.current || inputText || '').trim();
+    const finalPhrase = (
+      utteranceBufferRef.current || 
+      finalTranscriptRef.current || 
+      interimTranscriptRef.current || 
+      accumulatedSpeechRef.current || 
+      inputText || 
+      ''
+    ).trim();
+
     if (!finalPhrase || finalPhrase === lastSubmittedPhraseRef.current) {
       return;
     }
 
-    console.log(`[Bhashora Live VAD] >>> SENTENCE COMPLETE! Submitting full sentence: "${finalPhrase}"`);
+    const currentLang = liveRecognitionRef.current?.lang || 'unknown';
+    console.log(`[ASR Complete] Lang: ${currentLang} | Submitting Complete Utterance: "${finalPhrase}"`);
 
     isProcessingVoiceRef.current = true;
     lastSubmittedPhraseRef.current = finalPhrase;
     accumulatedSpeechRef.current = '';
-    finalizedHistoryRef.current = '';
+    finalTranscriptRef.current = '';
+    interimTranscriptRef.current = '';
+    utteranceBufferRef.current = '';
     sessionFinalRef.current = '';
+    finalizedHistoryRef.current = '';
     setLiveInterimText('');
 
     // State sequence: SENTENCE_COMPLETE -> TRANSLATING
@@ -1039,14 +1124,19 @@ export default function App() {
     sr.continuous = true;
     sr.interimResults = true;
 
-    const activeLang = (sourceLang !== 'auto' ? sourceLang : (speakerInputLang || 'te'));
+    // Use current speaker turn to set recognition language:
+    const turn = currentSpeakerTurnRef.current || 'A';
+    const langA = speakerInputLang || 'te';
+    const langB = speakerTargetLang || 'hi';
+    const activeLang = turn === 'A' ? langA : langB;
 
     sr.lang = SPEECH_LANGS[activeLang]?.code || (
       activeLang === 'kn' ? 'kn-IN' : 
       activeLang === 'te' ? 'te-IN' : 
       activeLang === 'hi' ? 'hi-IN' : 
       activeLang === 'ta' ? 'ta-IN' : 
-      activeLang === 'es' ? 'es-ES' : 'en-US'
+      activeLang === 'es' ? 'es-ES' : 
+      activeLang === 'en' ? 'en-US' : 'en-IN'
     );
 
     sr.onstart = () => {
@@ -1057,40 +1147,48 @@ export default function App() {
     sr.onresult = (e) => {
       if (isProcessingVoiceRef.current) return;
 
-      let sessionFinal = '';
-      let sessionInterim = '';
+      let currentSessionFinal = '';
+      let currentInterim = '';
 
       for (let i = 0; i < e.results.length; i++) {
-        const transcript = e.results[i][0].transcript;
-        if (e.results[i].isFinal) {
-          sessionFinal += transcript + ' ';
+        const res = e.results[i];
+        const transcript = (res[0]?.transcript || '').trim();
+        if (!transcript) continue;
+        if (res.isFinal) {
+          currentSessionFinal += (currentSessionFinal ? ' ' : '') + transcript;
         } else {
-          sessionInterim += transcript + ' ';
+          currentInterim += (currentInterim ? ' ' : '') + transcript;
         }
       }
 
-      sessionFinalRef.current = sessionFinal.trim();
-      const combinedFinal = (finalizedHistoryRef.current + ' ' + sessionFinalRef.current).trim();
-      const combinedTotal = (combinedFinal + ' ' + sessionInterim).trim();
+      // Maintain separate final and interim transcripts
+      const combinedFinal = (sessionFinalRef.current + (sessionFinalRef.current && currentSessionFinal ? ' ' : '') + currentSessionFinal).trim();
+      finalTranscriptRef.current = combinedFinal;
+      interimTranscriptRef.current = currentInterim;
 
-      if (!combinedTotal) return;
+      // Utterance buffer holds preview across all finalized and interim speech
+      const fullUtterance = (combinedFinal + (combinedFinal && currentInterim ? ' ' : '') + currentInterim).trim();
+      utteranceBufferRef.current = fullUtterance;
+      accumulatedSpeechRef.current = fullUtterance;
 
-      // Update what user said in real-time with zero lag
-      setInputText(combinedTotal);
-      setLiveInterimText(combinedTotal);
-      accumulatedSpeechRef.current = combinedTotal;
+      if (!fullUtterance) return;
+
+      // Real-time live transcript preview in UI
+      setInputText(fullUtterance);
+      setLiveInterimText(fullUtterance);
       setSpeakerState('transcribing');
       liveStatusRef.current = 'transcribing';
 
-      // Reset the silence debounce timer on every new speech event
+      // Required Debug Log
+      console.log(`[ASR Debug] Lang: ${sr.lang} | Interim: "${currentInterim}" | Final: "${combinedFinal}"`);
+
+      // Reset the silence debounce timer on every new speech event (interim or final)
       if (speechSilenceTimerRef.current) {
         clearTimeout(speechSilenceTimerRef.current);
       }
 
-      // 🎯 Configurable End-of-Speech Silence Threshold (1400ms default, allows natural pauses without cutoff)
-      const delay = silenceThresholdRef.current || 1400;
-
-      console.log(`[Bhashora VAD] Live: "${combinedTotal}" | FinalBuffer: "${combinedFinal}" | SilenceTimer: ${delay}ms`);
+      // 🎯 Configurable End-of-Speech Silence Threshold (1500ms default: allows natural pauses without cutoff)
+      const delay = silenceThresholdRef.current || 1500;
 
       speechSilenceTimerRef.current = setTimeout(() => {
         if (finalizeUtteranceRef.current) {
@@ -1110,13 +1208,12 @@ export default function App() {
     };
 
     sr.onend = () => {
-      // 1. Move finalized words from this session into history buffer so they are never lost across breath pauses!
-      if (sessionFinalRef.current) {
-        finalizedHistoryRef.current = (finalizedHistoryRef.current + ' ' + sessionFinalRef.current).trim();
-        sessionFinalRef.current = '';
+      // Preserve finalized words across breath pauses
+      if (finalTranscriptRef.current) {
+        sessionFinalRef.current = finalTranscriptRef.current;
       }
 
-      // 2. If user is still in listening/transcribing turn, seamlessly restart recognition without clearing text:
+      // Seamlessly restart if user is still in listening/transcribing state
       if (isLiveActiveRef.current && !isProcessingVoiceRef.current) {
         setTimeout(() => {
           if (isLiveActiveRef.current && !isProcessingVoiceRef.current) {
@@ -1136,7 +1233,7 @@ export default function App() {
     } catch (e) {
       console.warn("SR start notice:", e);
     }
-  }, [sourceLang, targetLang, speakerInputLang, speakerTargetLang, processSpeakerVoice]);
+  }, [speakerInputLang, speakerTargetLang]);
 
   useEffect(() => {
     startLiveTurnRef.current = startLiveTurn;
@@ -1152,8 +1249,11 @@ export default function App() {
       setIsLiveActive(true);
       setSpeakerState('listening');
       liveStatusRef.current = 'listening';
-      const pairLangA = (sourceLang !== 'auto' ? sourceLang : (speakerInputLang || 'te'));
-      const pairLangB = (targetLang !== 'auto' ? targetLang : (speakerTargetLang || 'kn'));
+      currentSpeakerTurnRef.current = 'A';
+      setCurrentSpeakerTurn('A');
+      setLastSpeakerTurn('A');
+      const pairLangA = speakerInputLang || 'te';
+      const pairLangB = speakerTargetLang || 'hi';
       showToast(`🟢 Live Interpreter ACTIVE: ${LANGUAGES[pairLangA] || pairLangA} ⇄ ${LANGUAGES[pairLangB] || pairLangB}`);
       startLiveTurn();
     }
@@ -2854,7 +2954,7 @@ export default function App() {
                   <span>Turn Alternate</span>
                   {twoWayAutoSwitch && (
                     <span className="text-[10px] bg-indigo-500/30 text-indigo-200 px-2 py-0.5 rounded-full font-bold">
-                      {currentSpeakerTurn === 'A' ? SPEECH_LANGS[speakerInputLang]?.name?.split(' ')[0] : LANGUAGES[speakerTargetLang]?.split(' ')[0]}
+                      {currentSpeakerTurn === 'A' ? `Turn A: ${LANGUAGES[speakerInputLang]?.split(' ')[0]}` : `Turn B: ${LANGUAGES[speakerTargetLang]?.split(' ')[0]}`}
                     </span>
                   )}
                 </button>
@@ -2907,7 +3007,7 @@ export default function App() {
                   }`} />
                   {speakerState === 'listening' && (
                     <span className="text-rose-300 font-bold">
-                      👂 Listening in {SPEECH_LANGS[twoWayAutoSwitch && currentSpeakerTurn === 'B' ? speakerTargetLang : speakerInputLang]?.name}... Speak now!
+                      👂 Listening to {currentSpeakerTurn === 'A' ? `Person A (${LANGUAGES[speakerInputLang] || speakerInputLang})` : `Person B (${LANGUAGES[speakerTargetLang] || speakerTargetLang})`}... Speak now!
                     </span>
                   )}
                   {speakerState === 'translating' && (
@@ -2919,7 +3019,7 @@ export default function App() {
                   {speakerState === 'speaking' && (
                     <span className="text-emerald-300 font-bold flex items-center gap-1.5">
                       <Volume2 className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-                      🔊 Speaking aloud in {LANGUAGES[speakerTargetLang]}...
+                      🔊 Speaking aloud in {LANGUAGES[lastSpeakerTurn === 'A' ? speakerTargetLang : speakerInputLang]}...
                     </span>
                   )}
                   {speakerState === 'idle' && (
@@ -2946,12 +3046,12 @@ export default function App() {
             {/* DUAL DISPLAY CARDS: USER SPOKE vs SPEAKER RESPONDED */}
             <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-5">
               
-              {/* Box 1: What You Said */}
+              {/* Box 1: What Spoken */}
               <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 flex flex-col justify-between shadow-xl">
                 <div>
                   <div className="flex items-center justify-between text-xs text-slate-400 mb-2.5">
                     <span className="font-bold flex items-center gap-1.5 text-blue-400 uppercase tracking-wide">
-                      <Mic className="w-4 h-4" /> 🎤 YOU SAID — {SPEECH_LANGS[speakerInputLang]?.name || 'Telugu (తెలుగు)'}
+                      <Mic className="w-4 h-4" /> 🎤 {lastSpeakerTurn === 'A' ? `PERSON A (${LANGUAGES[speakerInputLang] || speakerInputLang})` : `PERSON B (${LANGUAGES[speakerTargetLang] || speakerTargetLang})`}
                     </span>
                     {speakerTransScript && (
                       <span className="text-[10px] bg-indigo-500/15 text-indigo-300 px-2 py-0.5 rounded-md border border-indigo-500/30">
@@ -2972,20 +3072,20 @@ export default function App() {
                   )}
                 </div>
                 <div className="text-[11px] text-slate-500 pt-3 border-t border-slate-800/80 mt-3 flex items-center justify-between">
-                  <span>Input Meaning & Context</span>
-                  <span className="text-blue-400 font-mono text-[11px]">{speakerInputLang}</span>
+                  <span>Spoken Input ({lastSpeakerTurn === 'A' ? 'Person A' : 'Person B'})</span>
+                  <span className="text-blue-400 font-mono text-[11px]">{lastSpeakerTurn === 'A' ? speakerInputLang : speakerTargetLang}</span>
                 </div>
               </div>
 
-              {/* Box 2: Speaker Response */}
+              {/* Box 2: Translated Output */}
               <div className="bg-slate-900/90 border border-purple-500/40 rounded-3xl p-6 flex flex-col justify-between shadow-xl">
                 <div>
                   <div className="flex items-center justify-between text-xs text-purple-300 mb-2.5">
                     <span className="font-bold flex items-center gap-1.5 uppercase tracking-wide">
-                      <Volume2 className="w-4 h-4 text-purple-400" /> 🔊 TRANSLATED RESPONSE — {LANGUAGES[speakerTargetLang] || 'Hindi'}
+                      <Volume2 className="w-4 h-4 text-purple-400" /> 🔊 {lastSpeakerTurn === 'A' ? `TRANSLATED FOR PERSON B (${LANGUAGES[speakerTargetLang] || speakerTargetLang})` : `TRANSLATED FOR PERSON A (${LANGUAGES[speakerInputLang] || speakerInputLang})`}
                     </span>
                     <button 
-                      onClick={() => speakText(speakerResponseText, speakerTargetLang)}
+                      onClick={() => speakText(speakerResponseText, lastSpeakerTurn === 'A' ? speakerTargetLang : speakerInputLang)}
                       className="p-1.5 rounded-lg hover:bg-slate-800 text-purple-300 transition-colors cursor-pointer"
                       title="Replay Spoken Audio"
                     >
