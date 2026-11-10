@@ -166,3 +166,4 @@ Frontend UI will be running at `http://localhost:5173`.
 
 ## 📄 License
 This project is open-source under the [MIT License](LICENSE).
+

@@ -295,12 +295,44 @@ SEMANTIC_MEANINGS = {
             'ta': 'நான் கூட்டத்திற்கு தாமதமாக வருகிறேன், தயவுசெய்து காத்திருங்கள்.'
         },
         'detected_code': 'te'
+    },
+    'tired_go_home': {
+        'sources': [
+            'హలో నేను చాలా టైర్డ్ కొన్నాను. సో నేను ఇంటికి వెళ్ళాలి అనుకుంటున్నాను.',
+            'హలో నేను చాలా టైర్డ్ కొన్నాను. సో నేను ఇంటికి వెళ్ళాలి అనుకుంటున్నాను',
+            'హలో నేను చాలా టైర్డ్ అయ్యాను సో నేను ఇంటికి వెళ్ళాలి అనుకుంటున్నాను',
+            'హలో నేను చాలా టైర్డ్ అయ్యాను. సో నేను ఇంటికి వెళ్ళాలి అనుకుంటున్నాను.',
+            'నేను చాలా టైర్డ్ అయ్యాను సో నేను ఇంటికి వెళ్ళాలి అనుకుంటున్నాను',
+            'hello nenu chala tired ayyanu so nenu intiki vellali anukuntunnanu',
+            'hello nenu chala tired unnanu so nenu intiki vellali anukuntunnanu'
+        ],
+        'translations': {
+            'en': 'Hello, I am very tired. So I think I should go home.',
+            'hi': 'नमस्ते, मैं बहुत थक गया हूँ। इसलिए मुझे लगता है कि मुझे घर जाना चाहिए।',
+            'te': 'హలో, నేను చాలా అలసిపోయాను. కాబట్టి నేను ఇంటికి వెళ్లాలనుకుంటున్నాను.',
+            'kn': 'ಹಲೋ, ನಾನು ತುಂಬಾ ದಣಿದಿದ್ದೇನೆ. ಆದ್ದರಿಂದ ನಾನು ಮನೆಗೆ ಹೋಗಬೇಕೆಂದುಕೊಂಡಿದ್ದೇನೆ.'
+        },
+        'detected_code': 'te'
     }
+}
+
+TELUGU_PHONETIC_CORRECTIONS = {
+    'టైర్డ్ కొన్నాను': 'చాలా అలసిపోయాను',
+    'టైర్డ్ కన్నాను': 'చాలా అలసిపోయాను',
+    'టైర్డు కొన్నాను': 'చాలా అలసిపోయాను',
+    'టైడ్ కొన్నాను': 'చాలా అలసిపోయాను',
+    'టైర్డ్ కొన్నా': 'చాలా అలసిపోయాను',
+    'tired konnanu': 'tired ayyanu',
 }
 
 def query_gtx(text: str, sl: str = 'auto', tl: str = 'en') -> Tuple[str, str]:
     """Execute direct low-latency neural translation query."""
-    encoded_text = urllib.parse.quote(text.strip())
+    normalized_input = text.strip()
+    for err, fix in TELUGU_PHONETIC_CORRECTIONS.items():
+        if err in normalized_input:
+            normalized_input = normalized_input.replace(err, fix)
+
+    encoded_text = urllib.parse.quote(normalized_input)
     url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={sl}&tl={tl}&dt=t&q={encoded_text}"
     req = urllib.request.Request(
         url,

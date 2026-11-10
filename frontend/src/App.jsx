@@ -348,8 +348,8 @@ export default function App() {
   const activeTTSIdRef = useRef(0);
   const activeTranslationRequestIdRef = useRef(0);
   const selectedVoiceCacheRef = useRef({});
-  const [silenceThreshold, setSilenceThreshold] = useState(1500);
-  const silenceThresholdRef = useRef(1500);
+  const [silenceThreshold, setSilenceThreshold] = useState(1200);
+  const silenceThresholdRef = useRef(1200);
   const finalizeUtteranceRef = useRef(null);
   const voicesRef = useRef([]);
   const [cachedVoices, setCachedVoices] = useState([]);
@@ -892,11 +892,16 @@ export default function App() {
     // In Live Mode: determine current speaker turn and appropriate language pair
     const turn = currentSpeakerTurnRef.current || 'A';
     setLastSpeakerTurn(turn);
-    const langA = speakerInputLang || 'te';
-    const langB = speakerTargetLang || 'hi';
 
-    let sLang = forceInputLang || (turn === 'A' ? langA : langB);
-    let tLang = forceTargetLang || (turn === 'A' ? langB : langA);
+    // Read active selected target and source languages directly:
+    const activeTarget = (targetLang !== 'auto' && targetLang) ? targetLang : (speakerTargetLang || 'en');
+    const activeSource = (sourceLang !== 'auto' && sourceLang) ? sourceLang : (speakerInputLang || 'te');
+
+    const langA = activeSource;
+    const langB = activeTarget;
+
+    let sLang = forceInputLang || (turn === 'A' ? (sourceLang !== 'auto' ? sourceLang : 'auto') : langB);
+    let tLang = forceTargetLang || (turn === 'A' ? langB : (sourceLang !== 'auto' ? sourceLang : langA));
 
     setSpeakerState('translating');
     liveStatusRef.current = 'translating';
@@ -945,7 +950,7 @@ export default function App() {
 
           // Prevent translating into the exact same language (e.g. if reverse detected)
           if (data.detected_code && data.detected_code === tLang) {
-            const reversedTarget = (tLang === langA ? langB : langA);
+            const reversedTarget = (tLang === langB ? langA : langB);
             try {
               const revResp = await fetch('http://127.0.0.1:8000/api/translate', {
                 method: 'POST',
@@ -1053,7 +1058,7 @@ export default function App() {
         liveStatusRef.current = 'idle';
       }
     });
-  }, [speakerInputLang, speakerTargetLang, isEffectivelyOffline, history, selectedScenario, speakTranslatedSentence]);
+  }, [sourceLang, targetLang, speakerInputLang, speakerTargetLang, isEffectivelyOffline, history, selectedScenario, speakTranslatedSentence]);
 
   // Sentence Completion & Dispatch: submits only after complete utterance
   const finalizeAndSubmitUtterance = useCallback(() => {
@@ -1125,9 +1130,12 @@ export default function App() {
     sr.interimResults = true;
 
     // Use current speaker turn to set recognition language:
+    const activeTarget = (targetLang !== 'auto' && targetLang) ? targetLang : (speakerTargetLang || 'en');
+    const activeSource = (sourceLang !== 'auto' && sourceLang) ? sourceLang : (speakerInputLang || 'te');
+
     const turn = currentSpeakerTurnRef.current || 'A';
-    const langA = speakerInputLang || 'te';
-    const langB = speakerTargetLang || 'hi';
+    const langA = activeSource;
+    const langB = activeTarget;
     const activeLang = turn === 'A' ? langA : langB;
 
     sr.lang = SPEECH_LANGS[activeLang]?.code || (
@@ -1187,8 +1195,8 @@ export default function App() {
         clearTimeout(speechSilenceTimerRef.current);
       }
 
-      // 🎯 Configurable End-of-Speech Silence Threshold (1500ms default: allows natural pauses without cutoff)
-      const delay = silenceThresholdRef.current || 1500;
+      // 🎯 Configurable End-of-Speech Silence Threshold (1200ms default: allows natural pauses without cutoff)
+      const delay = silenceThresholdRef.current || 1200;
 
       speechSilenceTimerRef.current = setTimeout(() => {
         if (finalizeUtteranceRef.current) {
@@ -1233,7 +1241,7 @@ export default function App() {
     } catch (e) {
       console.warn("SR start notice:", e);
     }
-  }, [speakerInputLang, speakerTargetLang]);
+  }, [sourceLang, targetLang, speakerInputLang, speakerTargetLang]);
 
   useEffect(() => {
     startLiveTurnRef.current = startLiveTurn;
@@ -1252,8 +1260,8 @@ export default function App() {
       currentSpeakerTurnRef.current = 'A';
       setCurrentSpeakerTurn('A');
       setLastSpeakerTurn('A');
-      const pairLangA = speakerInputLang || 'te';
-      const pairLangB = speakerTargetLang || 'hi';
+      const pairLangA = (sourceLang !== 'auto' ? sourceLang : (speakerInputLang || 'te'));
+      const pairLangB = (targetLang !== 'auto' && targetLang) ? targetLang : (speakerTargetLang || 'en');
       showToast(`🟢 Live Interpreter ACTIVE: ${LANGUAGES[pairLangA] || pairLangA} ⇄ ${LANGUAGES[pairLangB] || pairLangB}`);
       startLiveTurn();
     }
@@ -1683,12 +1691,21 @@ export default function App() {
               </div>
             </div>
 
-            {/* Live Interpreter Status Pill */}
-            <div className="flex items-center gap-2">
-              <span className="px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-xs font-semibold flex items-center gap-1.5">
+            {/* Top Bar Actions: Status Pill & Explore Tools (Navigates to Page 3) */}
+            <div className="flex items-center gap-3">
+              <span className="hidden sm:flex px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-xs font-semibold items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
                 Live Two-Way Interpreter
               </span>
+              <button
+                onClick={() => setCurrentStage('workspace')}
+                className="px-4 py-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-700/80 hover:border-indigo-500/50 transition-all cursor-pointer flex items-center gap-2 shadow-md active:scale-95 group"
+                title="Open full workspace with sidebar and all tools"
+              >
+                <Menu className="w-4 h-4 text-cyan-400 group-hover:scale-110 transition-transform" />
+                <span className="text-xs font-bold text-slate-200">Explore Tools</span>
+                <span className="text-xs text-indigo-400">➔</span>
+              </button>
             </div>
           </header>
 
@@ -1702,7 +1719,13 @@ export default function App() {
                 <span className="text-xs font-bold text-blue-400 shrink-0">I Speak:</span>
                 <select
                   value={sourceLang}
-                  onChange={(e) => setSourceLang(e.target.value)}
+                  onChange={(e) => {
+                    const newSource = e.target.value;
+                    setSourceLang(newSource);
+                    if (newSource !== 'auto') {
+                      setSpeakerInputLang(newSource);
+                    }
+                  }}
                   className="bg-transparent text-sm font-bold text-white focus:outline-none cursor-pointer w-full"
                 >
                   <option value="te" className="bg-slate-900 text-white">🇮🇳 Telugu (తెలుగు)</option>
@@ -1731,7 +1754,11 @@ export default function App() {
                 <span className="text-xs font-bold text-purple-400 shrink-0">Translate To:</span>
                 <select
                   value={targetLang}
-                  onChange={(e) => setTargetLang(e.target.value)}
+                  onChange={(e) => {
+                    const newTarget = e.target.value;
+                    setTargetLang(newTarget);
+                    setSpeakerTargetLang(newTarget);
+                  }}
                   className="bg-transparent text-sm font-bold text-white focus:outline-none cursor-pointer w-full"
                 >
                   <option value="hi" className="bg-slate-900 text-white">🇮🇳 Hindi (हिन्दी)</option>
