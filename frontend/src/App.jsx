@@ -339,6 +339,7 @@ export default function App() {
   const activeAudioSourceRef = useRef(null);
   const currentUtteranceRef = useRef(null);
   const lastSubmittedPhraseRef = useRef('');
+  const lastSubmitTimeRef = useRef(0);
   const isProcessingVoiceRef = useRef(false);
   const finalizedHistoryRef = useRef('');
   const sessionFinalRef = useRef('');
@@ -558,9 +559,15 @@ export default function App() {
     console.log(`[TTS CONTROLLER] Translated text: "${cleanText}"`);
 
     let speechEnded = false;
+    let fallbackTimer = null;
+
     const handleSpeechEnd = () => {
       if (speechEnded) return;
       speechEnded = true;
+      if (fallbackTimer) {
+        clearTimeout(fallbackTimer);
+        fallbackTimer = null;
+      }
       console.log(`[TTS CONTROLLER] TTS end: ${utteranceId}`);
 
       if (activeTTSIdRef.current === utteranceId) {
@@ -570,6 +577,13 @@ export default function App() {
         if (onEndCallback) onEndCallback();
       }
     };
+
+    // Watchdog safety timer guarantees the interpreter never freezes
+    const approxDurationMs = Math.max(3000, Math.min(14000, cleanText.split(/\s+/).length * 480 + 1500));
+    fallbackTimer = setTimeout(() => {
+      console.warn(`[TTS CONTROLLER] Watchdog safety timer triggered for ${utteranceId}`);
+      handleSpeechEnd();
+    }, approxDurationMs);
 
     // SINGLE PLAYBACK PATH DECISION:
     // If the browser has an exact installed voice, use SpeechSynthesis.
@@ -1077,9 +1091,11 @@ export default function App() {
       ''
     ).trim();
 
-    if (!finalPhrase || finalPhrase === lastSubmittedPhraseRef.current) {
+    const now = Date.now();
+    if (!finalPhrase || (finalPhrase === lastSubmittedPhraseRef.current && (now - lastSubmitTimeRef.current < 2000))) {
       return;
     }
+    lastSubmitTimeRef.current = now;
 
     const currentLang = liveRecognitionRef.current?.lang || 'unknown';
     console.log(`[ASR Complete] Lang: ${currentLang} | Submitting Complete Utterance: "${finalPhrase}"`);
@@ -1253,6 +1269,15 @@ export default function App() {
     if (isLiveActive) {
       stopLiveInterpretation();
     } else {
+      isProcessingVoiceRef.current = false;
+      lastSubmittedPhraseRef.current = '';
+      lastSubmitTimeRef.current = 0;
+      sessionFinalRef.current = '';
+      finalTranscriptRef.current = '';
+      interimTranscriptRef.current = '';
+      utteranceBufferRef.current = '';
+      activeTTSIdRef.current++;
+      activeTranslationRequestIdRef.current++;
       isLiveActiveRef.current = true;
       setIsLiveActive(true);
       setSpeakerState('listening');
@@ -1856,6 +1881,14 @@ export default function App() {
                     : `Hands-free interpreter: ${LANGUAGES[sourceLang] || 'Auto'} ➔ ${LANGUAGES[targetLang]}`}
                 </span>
               </div>
+
+              {/* Live Audio Interim Hearing Preview */}
+              {isLiveActive && liveInterimText && (
+                <div className="mt-3 px-4 py-2 bg-slate-950/80 border border-cyan-500/40 rounded-2xl text-xs text-cyan-200 italic flex items-center gap-2 animate-pulse shadow-lg">
+                  <Mic className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                  <span>Hearing: "{liveInterimText}..."</span>
+                </div>
+              )}
             </div>
 
             {/* Optional Sleek Text Input */}
