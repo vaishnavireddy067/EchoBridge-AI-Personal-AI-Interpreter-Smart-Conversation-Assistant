@@ -338,8 +338,17 @@ export default function App() {
   const currentUtteranceRef = useRef(null);
   const lastSubmittedPhraseRef = useRef('');
   const isProcessingVoiceRef = useRef(false);
+  const finalizedHistoryRef = useRef('');
+  const sessionFinalRef = useRef('');
+  const [silenceThreshold, setSilenceThreshold] = useState(1100);
+  const silenceThresholdRef = useRef(1100);
+  const finalizeUtteranceRef = useRef(null);
   const voicesRef = useRef([]);
   const [cachedVoices, setCachedVoices] = useState([]);
+
+  useEffect(() => {
+    silenceThresholdRef.current = silenceThreshold;
+  }, [silenceThreshold]);
 
   // Sync refs with reactive state
   useEffect(() => {
@@ -415,8 +424,8 @@ export default function App() {
     };
   }, []);
 
-  // Unlock and maintain browser AudioContext to eliminate all autoplay restrictions
-  const ensureAudioContext = useCallback(() => {
+  // Unlock and maintain browser AudioContext & Audio elements to eliminate autoplay restrictions
+  const unlockAudio = useCallback(() => {
     try {
       if (!audioContextRef.current) {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -427,12 +436,34 @@ export default function App() {
       if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
         audioContextRef.current.resume();
       }
+      // Play a silent 0.05-sec sound to guarantee browser audio authorization
+      const silentAudio = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
+      silentAudio.play().then(() => {
+        silentAudio.pause();
+      }).catch(() => {});
     } catch (e) {
-      console.warn("AudioContext initialization notice:", e);
+      console.warn("Audio unlock notice:", e);
     }
   }, []);
 
-  // Fast Voice Matching & Speech Playback Pipeline (Web Audio API + SpeechSynthesis Fallback)
+  const ensureAudioContext = unlockAudio;
+
+  // Global user interaction listener to unlock audio on very first user click
+  useEffect(() => {
+    const handleFirstGesture = () => {
+      unlockAudio();
+    };
+    window.addEventListener('click', handleFirstGesture, { passive: true });
+    window.addEventListener('touchstart', handleFirstGesture, { passive: true });
+    window.addEventListener('keydown', handleFirstGesture, { passive: true });
+    return () => {
+      window.removeEventListener('click', handleFirstGesture);
+      window.removeEventListener('touchstart', handleFirstGesture);
+      window.removeEventListener('keydown', handleFirstGesture);
+    };
+  }, [unlockAudio]);
+
+  // Fast Voice Matching & Speech Playback Pipeline (HTML5 Stream + Web Audio API + SpeechSynthesis Fallback)
   const playAudioSpeech = useCallback(async (text, langCode, onEndCallback = null) => {
     if (!text || !text.trim()) {
       if (onEndCallback) onEndCallback();
@@ -446,6 +477,9 @@ export default function App() {
       setIsSpeaking(false);
       currentUtteranceRef.current = null;
       activeAudioSourceRef.current = null;
+      if (activeAudioRef.current) {
+        activeAudioRef.current = null;
+      }
       if (onEndCallback) onEndCallback();
     };
 
@@ -461,83 +495,117 @@ export default function App() {
       langCode === 'ta' ? 'ta-IN' :
       langCode === 'es' ? 'es-ES' : 'en-US'
     );
-    const prefix = langCode.toLowerCase().split('-')[0];
+    const prefix = (langCode || 'en').toLowerCase().split('-')[0];
     const available = voicesRef.current.length > 0 ? voicesRef.current : (window.speechSynthesis?.getVoices() || []);
+    const cleanText = text.replace(/^["']|["']$/g, '').trim();
 
-    // 1. PRIMARY: High-Fidelity Web Audio Stream with Unlocked AudioContext
-    // Streams authentic native human pronunciation for Telugu, Kannada, Hindi, Tamil, English
-    // and is 100% immune to browser autoplay blocking.
-    try {
-      ensureAudioContext();
-      if (audioContextRef.current) {
-        if (audioContextRef.current.state === 'suspended') {
-          await audioContextRef.current.resume();
-        }
-
-        const ttsUrl = `http://127.0.0.1:8000/api/tts?lang=${encodeURIComponent(langCode || 'en')}&text=${encodeURIComponent(text)}`;
-        const resp = await fetch(ttsUrl);
-        if (resp.ok) {
-          const arrayBuf = await resp.arrayBuffer();
-          const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuf);
-          
-          if (activeAudioSourceRef.current) {
-            try { activeAudioSourceRef.current.stop(); } catch (e) {}
+    // Helper: Browser SpeechSynthesis Fallback
+    const trySpeechSynthesisFallback = () => {
+      try {
+        if (typeof window !== 'undefined' && window.speechSynthesis) {
+          let matchingVoice = available.find(v => v.lang.replace('_', '-').toLowerCase() === bcp47.toLowerCase());
+          if (!matchingVoice) {
+            matchingVoice = available.find(v => v.lang.toLowerCase().startsWith(prefix));
           }
 
-          const source = audioContextRef.current.createBufferSource();
-          source.buffer = audioBuffer;
-          source.connect(audioContextRef.current.destination);
-          
-          source.onended = () => {
+          if (window.speechSynthesis.paused) {
+            window.speechSynthesis.resume();
+          }
+
+          const utterance = new SpeechSynthesisUtterance(cleanText);
+          utterance.lang = bcp47;
+          if (matchingVoice) utterance.voice = matchingVoice;
+          utterance.rate = speechSpeed || 1.0;
+
+          utterance.onstart = () => {
+            setSpeakerState('speaking');
+            liveStatusRef.current = 'speaking';
+          };
+          utterance.onend = finishOnce;
+          utterance.onerror = (e) => {
+            console.warn("SpeechSynthesis error:", e);
             finishOnce();
           };
 
-          activeAudioSourceRef.current = source;
-          source.start(0);
+          currentUtteranceRef.current = utterance;
+          window.speechSynthesis.speak(utterance);
           return;
         }
+      } catch (synthErr) {
+        console.warn("SpeechSynthesis fallback error:", synthErr);
       }
-    } catch (audioErr) {
-      console.warn("WebAudio playback notice, trying SpeechSynthesis fallback:", audioErr);
-    }
+      finishOnce();
+    };
 
-    // 2. FALLBACK: Browser SpeechSynthesis
+    // Helper: Web Audio API Buffer Playback
+    const tryWebAudioFallback = () => {
+      try {
+        unlockAudio();
+        if (audioContextRef.current) {
+          const ttsUrl = `http://127.0.0.1:8000/api/tts?lang=${encodeURIComponent(prefix)}&text=${encodeURIComponent(cleanText)}`;
+          fetch(ttsUrl)
+            .then(res => {
+              if (!res.ok) throw new Error("TTS fetch failed");
+              return res.arrayBuffer();
+            })
+            .then(buf => audioContextRef.current.decodeAudioData(buf))
+            .then(audioBuffer => {
+              if (activeAudioSourceRef.current) {
+                try { activeAudioSourceRef.current.stop(); } catch (e) {}
+              }
+              const source = audioContextRef.current.createBufferSource();
+              source.buffer = audioBuffer;
+              source.connect(audioContextRef.current.destination);
+              source.onended = finishOnce;
+              activeAudioSourceRef.current = source;
+              source.start(0);
+            })
+            .catch(() => trySpeechSynthesisFallback());
+          return;
+        }
+      } catch (err) {
+        console.warn("WebAudio fallback error:", err);
+      }
+      trySpeechSynthesisFallback();
+    };
+
+    // 1. PRIMARY: Direct HTML5 Audio Streaming from /api/tts
+    // Streams native human voice audio for Telugu, Kannada, Hindi, Tamil, English, etc.
     try {
-      if (typeof window !== 'undefined' && window.speechSynthesis) {
-        let matchingVoice = available.find(v => v.lang.replace('_', '-').toLowerCase() === bcp47.toLowerCase());
-        if (!matchingVoice) {
-          matchingVoice = available.find(v => v.lang.toLowerCase().startsWith(prefix));
-        }
-
-        if (window.speechSynthesis.paused) {
-          window.speechSynthesis.resume();
-        }
-
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = bcp47;
-        if (matchingVoice) utterance.voice = matchingVoice;
-        utterance.rate = speechSpeed || 1.0;
-
-        utterance.onstart = () => {
-          setSpeakerState('speaking');
-          liveStatusRef.current = 'speaking';
-        };
-        utterance.onend = finishOnce;
-        utterance.onerror = (e) => {
-          console.warn("SpeechSynthesis error:", e);
-          finishOnce();
-        };
-
-        currentUtteranceRef.current = utterance;
-        window.speechSynthesis.speak(utterance);
-        return;
+      const ttsUrl = `http://127.0.0.1:8000/api/tts?lang=${encodeURIComponent(prefix)}&text=${encodeURIComponent(cleanText)}`;
+      
+      if (activeAudioRef.current) {
+        try {
+          activeAudioRef.current.pause();
+          activeAudioRef.current.currentTime = 0;
+        } catch (e) {}
       }
-    } catch (synthErr) {
-      console.warn("SpeechSynthesis fallback error:", synthErr);
-    }
 
-    finishOnce();
-  }, [speechSpeed, ensureAudioContext]);
+      const audio = new Audio(ttsUrl);
+      activeAudioRef.current = audio;
+      audio.playbackRate = speechSpeed || 1.0;
+
+      audio.onended = () => {
+        finishOnce();
+      };
+
+      audio.onerror = (e) => {
+        console.warn("HTML5 audio stream error, falling back to Web Audio / SpeechSynthesis:", e);
+        tryWebAudioFallback();
+      };
+
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((playErr) => {
+          console.warn("HTML5 play() restricted, attempting WebAudio fallback:", playErr);
+          tryWebAudioFallback();
+        });
+      }
+    } catch (e) {
+      console.warn("Direct audio stream instantiation error:", e);
+      tryWebAudioFallback();
+    }
+  }, [speechSpeed, unlockAudio]);
 
   // General Text-to-Speech Playback used across buttons and suggested replies
   const speakText = useCallback((text, langCode, onEndCallback = null) => {
@@ -734,6 +802,8 @@ export default function App() {
     setLiveInterimText('');
     accumulatedSpeechRef.current = '';
     lastSubmittedPhraseRef.current = '';
+    finalizedHistoryRef.current = '';
+    sessionFinalRef.current = '';
     isProcessingVoiceRef.current = false;
     currentUtteranceRef.current = null;
     if (speechSilenceTimerRef.current) {
@@ -961,9 +1031,48 @@ export default function App() {
     });
   }, [sourceLang, targetLang, speakerInputLang, speakerTargetLang, isEffectivelyOffline, history, speechSpeed, fetchSmartReplies, selectedScenario, playAudioSpeech]);
 
+  // Sentence Completion & Dispatch: submits only after complete utterance
+  const finalizeAndSubmitUtterance = useCallback(() => {
+    if (isProcessingVoiceRef.current) return;
+    if (speechSilenceTimerRef.current) {
+      clearTimeout(speechSilenceTimerRef.current);
+      speechSilenceTimerRef.current = null;
+    }
+
+    const finalPhrase = (accumulatedSpeechRef.current || inputText || '').trim();
+    if (!finalPhrase || finalPhrase === lastSubmittedPhraseRef.current) {
+      return;
+    }
+
+    console.log(`[Bhashora Live VAD] >>> SENTENCE COMPLETE! Submitting full sentence: "${finalPhrase}"`);
+
+    isProcessingVoiceRef.current = true;
+    lastSubmittedPhraseRef.current = finalPhrase;
+    accumulatedSpeechRef.current = '';
+    finalizedHistoryRef.current = '';
+    sessionFinalRef.current = '';
+    setLiveInterimText('');
+
+    // State sequence: SENTENCE_COMPLETE -> TRANSLATING
+    liveStatusRef.current = 'translating';
+    setSpeakerState('translating');
+
+    // Abort speech recognition cleanly so microphone is off while translating & speaking
+    if (liveRecognitionRef.current) {
+      try { liveRecognitionRef.current.abort(); } catch (err) {}
+      liveRecognitionRef.current = null;
+    }
+
+    processSpeakerVoice(finalPhrase);
+  }, [processSpeakerVoice, inputText]);
+
+  useEffect(() => {
+    finalizeUtteranceRef.current = finalizeAndSubmitUtterance;
+  }, [finalizeAndSubmitUtterance]);
+
   // Start a single listening turn in the continuous loop
   const startLiveTurn = useCallback(() => {
-    if (!isLiveActiveRef.current) return;
+    if (!isLiveActiveRef.current || isProcessingVoiceRef.current) return;
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -983,7 +1092,12 @@ export default function App() {
     const pairLangB = (targetLang !== 'auto' ? targetLang : (speakerTargetLang || 'kn'));
     const activeLang = currentSpeakerTurnRef.current === 'B' ? pairLangB : pairLangA;
 
-    sr.lang = SPEECH_LANGS[activeLang]?.code || (activeLang === 'kn' ? 'kn-IN' : activeLang === 'te' ? 'te-IN' : 'en-US');
+    sr.lang = SPEECH_LANGS[activeLang]?.code || (
+      activeLang === 'kn' ? 'kn-IN' : 
+      activeLang === 'te' ? 'te-IN' : 
+      activeLang === 'hi' ? 'hi-IN' : 
+      activeLang === 'ta' ? 'ta-IN' : 'en-US'
+    );
 
     sr.onstart = () => {
       setSpeakerState('listening');
@@ -991,75 +1105,76 @@ export default function App() {
     };
 
     sr.onresult = (e) => {
-      // Guard against duplicate processing while a turn is already executing/speaking
       if (isProcessingVoiceRef.current) return;
 
-      let currentSessionText = '';
+      let sessionFinal = '';
+      let sessionInterim = '';
+
       for (let i = 0; i < e.results.length; i++) {
-        currentSessionText += e.results[i][0].transcript + ' ';
+        const transcript = e.results[i][0].transcript;
+        if (e.results[i].isFinal) {
+          sessionFinal += transcript + ' ';
+        } else {
+          sessionInterim += transcript + ' ';
+        }
       }
-      const fullTrimmed = currentSessionText.trim();
-      if (!fullTrimmed) return;
+
+      sessionFinalRef.current = sessionFinal.trim();
+      const combinedFinal = (finalizedHistoryRef.current + ' ' + sessionFinalRef.current).trim();
+      const combinedTotal = (combinedFinal + ' ' + sessionInterim).trim();
+
+      if (!combinedTotal) return;
 
       // Update what user said in real-time with zero lag
-      setInputText(fullTrimmed);
-      setLiveInterimText(fullTrimmed);
-      accumulatedSpeechRef.current = fullTrimmed;
+      setInputText(combinedTotal);
+      setLiveInterimText(combinedTotal);
+      accumulatedSpeechRef.current = combinedTotal;
       setSpeakerState('transcribing');
       liveStatusRef.current = 'transcribing';
-
-      // Check whether ONLY the latest speech segment is marked final
-      const isLatestFinal = e.results[e.results.length - 1]?.isFinal;
 
       // Reset the silence debounce timer on every new speech event
       if (speechSilenceTimerRef.current) {
         clearTimeout(speechSilenceTimerRef.current);
       }
 
-      // 🎯 Responsive Turnaround: 750ms after sentence completion avoids cutting off natural pauses
-      const silenceDelay = isLatestFinal ? 750 : 1200;
+      // 🎯 Configurable End-of-Speech Silence Threshold (1400ms default, allows natural pauses without cutoff)
+      const delay = silenceThresholdRef.current || 1400;
+
+      console.log(`[Bhashora VAD] Live: "${combinedTotal}" | FinalBuffer: "${combinedFinal}" | SilenceTimer: ${delay}ms`);
 
       speechSilenceTimerRef.current = setTimeout(() => {
-        if (isProcessingVoiceRef.current) return;
-
-        const finalPhrase = accumulatedSpeechRef.current.trim();
-        if (finalPhrase && finalPhrase !== lastSubmittedPhraseRef.current) {
-          isProcessingVoiceRef.current = true;
-          lastSubmittedPhraseRef.current = finalPhrase;
-          accumulatedSpeechRef.current = '';
-          setLiveInterimText('');
-          speechSilenceTimerRef.current = null;
-          // Set state to translating BEFORE stopping recognition so sr.onend does not auto-restart!
-          liveStatusRef.current = 'translating';
-          setSpeakerState('translating');
-          try { sr.abort(); } catch (err) {}
-          liveRecognitionRef.current = null;
-          processSpeakerVoice(finalPhrase);
+        if (finalizeUtteranceRef.current) {
+          finalizeUtteranceRef.current();
         }
-      }, silenceDelay);
+      }, delay);
     };
 
     sr.onerror = (e) => {
-      if (e.error === 'no-speech' && isLiveActiveRef.current) {
+      if (e.error === 'no-speech' && isLiveActiveRef.current && !isProcessingVoiceRef.current) {
         setTimeout(() => {
-          if (isLiveActiveRef.current) startLiveTurn();
-        }, 200);
+          if (isLiveActiveRef.current && !isProcessingVoiceRef.current) startLiveTurn();
+        }, 150);
       } else if (e.error !== 'aborted') {
         console.warn("Live listening notice:", e.error);
       }
     };
 
     sr.onend = () => {
-      // If silence timer is still ticking, the user was just pausing for breath:
-      // Do NOT interrupt or submit early! Keep listening until the ~1.8-2s silence timer fires!
-      if (isLiveActiveRef.current && liveStatusRef.current === 'listening') {
+      // 1. Move finalized words from this session into history buffer so they are never lost across breath pauses!
+      if (sessionFinalRef.current) {
+        finalizedHistoryRef.current = (finalizedHistoryRef.current + ' ' + sessionFinalRef.current).trim();
+        sessionFinalRef.current = '';
+      }
+
+      // 2. If user is still in listening/transcribing turn, seamlessly restart recognition without clearing text:
+      if (isLiveActiveRef.current && !isProcessingVoiceRef.current) {
         setTimeout(() => {
-          if (isLiveActiveRef.current && liveStatusRef.current === 'listening') {
+          if (isLiveActiveRef.current && !isProcessingVoiceRef.current) {
             try {
               sr.start();
             } catch (err) {}
           }
-        }, 80);
+        }, 50);
       }
     };
 
@@ -2633,6 +2748,39 @@ export default function App() {
                       }}
                     />
                   ))}
+                </div>
+              )}
+
+              {/* Instant Finish Speaking & Response Buffer Speed Controls */}
+              {isLiveActive && (
+                <div className="flex flex-wrap items-center justify-center gap-2.5 mt-4 z-20">
+                  <button
+                    onClick={() => {
+                      if (finalizeUtteranceRef.current) {
+                        finalizeUtteranceRef.current();
+                      }
+                    }}
+                    disabled={speakerState === 'translating' || speakerState === 'speaking' || (!inputText && !liveInterimText)}
+                    className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-lg shadow-teal-500/20 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+                    title="Click immediately when you finish speaking to translate & reply without waiting for silence"
+                  >
+                    <span>⚡</span> Finish Speaking (Reply Now)
+                  </button>
+
+                  <div className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-slate-950/80 border border-slate-800 text-xs text-slate-300">
+                    <span className="text-[10px] text-slate-400 font-semibold uppercase">Pause Buffer:</span>
+                    <button
+                      onClick={() => setSilenceThreshold(prev => Math.max(600, prev - 100))}
+                      className="w-5 h-5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold flex items-center justify-center text-xs active:scale-90"
+                      title="Shorter pause for faster turnaround"
+                    >-</button>
+                    <span className="font-mono text-cyan-300 font-bold text-xs px-1">{(silenceThreshold / 1000).toFixed(1)}s</span>
+                    <button
+                      onClick={() => setSilenceThreshold(prev => Math.min(2500, prev + 100))}
+                      className="w-5 h-5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold flex items-center justify-center text-xs active:scale-90"
+                      title="Longer pause for natural breathing"
+                    >+</button>
+                  </div>
                 </div>
               )}
             </div>

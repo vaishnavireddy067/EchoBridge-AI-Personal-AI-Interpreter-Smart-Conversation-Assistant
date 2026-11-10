@@ -216,6 +216,65 @@ SEMANTIC_MEANINGS = {
             'te': 'శుభరాత్రి'
         },
         'detected_code': 'te'
+    },
+    'going_to_hyderabad': {
+        'sources': [
+            'నేను రేపు హైదరాబాద్ కి వెళ్లాలని అనుకుంటున్నాను.',
+            'నేను రేపు హైదరాబాద్ కి వెళ్లాలని అనుకుంటున్నాను',
+            'నేను రేపు హైదరాబాద్ వెళ్లాలని అనుకుంటున్నాను.',
+            'నేను రేపు హైదరాబాద్ వెళ్లాలని అనుకుంటున్నాను',
+            'i am planning to go to hyderabad tomorrow.',
+            'i am planning to go to hyderabad tomorrow',
+            'i want to go to hyderabad tomorrow.',
+            'i want to go to hyderabad tomorrow'
+        ],
+        'translations': {
+            'en': 'I am planning to go to Hyderabad tomorrow.',
+            'te': 'నేను రేపు హైదరాబాద్ కి వెళ్లాలని అనుకుంటున్నాను.',
+            'hi': 'मैं कल हैदराबाद जाने की योजना बना रहा हूँ।',
+            'kn': 'ನಾನು ನಾಳೆ ಹೈದರಾಬಾದ್‌ಗೆ ಹೋಗಲು ಯೋಜಿಸುತ್ತಿದ್ದೇನೆ.'
+        },
+        'detected_code': 'te'
+    },
+    'did_you_eat_or_not_yet': {
+        'sources': [
+            'మీరు భోజనం చేశారా లేదా ఇంకా చేయలేదా?',
+            'మీరు భోజనం చేశారా లేదా ఇంకా చేయలేదా',
+            'భోజనం చేశారా లేదా ఇంకా చేయలేదా?',
+            'భోజనం చేశారా లేదా ఇంకా చేయలేదా',
+            'have you eaten, or not yet?',
+            'have you eaten or not yet?',
+            'have you eaten, or not yet',
+            'have you eaten or not yet',
+            'did you eat, or not yet?',
+            'did you eat or not yet?'
+        ],
+        'translations': {
+            'en': 'Have you eaten, or not yet?',
+            'te': 'మీరు భోజనం చేశారా లేదా ఇంకా చేయలేదా?',
+            'hi': 'क्या आपने खाना खाया या अभी तक नहीं?',
+            'kn': 'ನೀವು ಊಟ ಮಾಡಿದಿರಾ ಅಥವಾ ಇನ್ನೂ ಇಲ್ವಾ?'
+        },
+        'detected_code': 'te'
+    },
+    'learn_new_language_travel': {
+        'sources': [
+            'i want to learn a new language because i travel frequently.',
+            'i want to learn a new language because i travel frequently',
+            'i want to learn a new language as i travel frequently.',
+            'i want to learn a new language as i travel frequently',
+            'నేను తరచుగా ప్రయాణిస్తాను కాబట్టి కొత్త భాష నేర్చుకోవాలనుకుంటున్నాను.',
+            'నేను తరచుగా ప్రయాణిస్తాను కాబట్టి కొత్త భాష నేర్చుకోవాలనుకుంటున్నాను',
+            'నేను తరచుగా ప్రయాణిస్తున్నందున నేను కొత్త భాషను నేర్చుకోవాలనుకుంటున్నాను.',
+            'నేను తరచుగా ప్రయాణిస్తున్నందున నేను కొత్త భాషను నేర్చుకోవాలనుకుంటున్నాను'
+        ],
+        'translations': {
+            'te': 'నేను తరచుగా ప్రయాణిస్తాను కాబట్టి కొత్త భాష నేర్చుకోవాలనుకుంటున్నాను.',
+            'en': 'I want to learn a new language because I travel frequently.',
+            'hi': 'मैं एक नई भाषा सीखना चाहता हूँ क्योंकि मैं अक्सर यात्रा करता हूँ।',
+            'kn': 'ನಾನು ಆಗಾಗ್ಗೆ ಪ್ರಯಾಣಿಸುವುದರಿಂದ ಹೊಸ ಭಾಷೆಯನ್ನು ಕಲಿಯಲು ಬಯಸುತ್ತೇನೆ.'
+        },
+        'detected_code': 'en'
     }
 }
 
