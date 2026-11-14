@@ -322,7 +322,10 @@ TELUGU_PHONETIC_CORRECTIONS = {
     'టైర్డు కొన్నాను': 'చాలా అలసిపోయాను',
     'టైడ్ కొన్నాను': 'చాలా అలసిపోయాను',
     'టైర్డ్ కొన్నా': 'చాలా అలసిపోయాను',
+    'టైర్డ్ అయ్యాను': 'చాలా అలసిపోయాను',
+    'టైర్డ్ గా ఉన్నాను': 'చాలా అలసిపోయాను',
     'tired konnanu': 'tired ayyanu',
+    'tired ga unnanu': 'tired ayyanu',
 }
 
 def query_gtx(text: str, sl: str = 'auto', tl: str = 'en') -> Tuple[str, str]:

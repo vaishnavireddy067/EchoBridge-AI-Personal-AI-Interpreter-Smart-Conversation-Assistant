@@ -56,6 +56,8 @@ import {
 } from 'lucide-react';
 import { translateOffline, OFFLINE_PHRASEBOOK, OFFLINE_PACKS } from './offlineEngine.js';
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+
 const LANGUAGES = {
   auto: "Auto Detect",
   en: "English",
@@ -290,7 +292,7 @@ export default function App() {
 
   const fetchDbAnalytics = useCallback(async () => {
     try {
-      const resp = await fetch('http://127.0.0.1:8000/api/analytics');
+      const resp = await fetch(`${API_BASE_URL}/api/analytics`);
       if (resp.ok) {
         const data = await resp.json();
         setDbAnalytics(data);
@@ -624,7 +626,7 @@ export default function App() {
 
     // High-Fidelity Native Audio Stream for Indian Languages
     try {
-      const ttsUrl = `http://127.0.0.1:8000/api/tts?lang=${encodeURIComponent(prefix)}&text=${encodeURIComponent(cleanText)}`;
+      const ttsUrl = `${API_BASE_URL}/api/tts?lang=${encodeURIComponent(prefix)}&text=${encodeURIComponent(cleanText)}`;
       const audioEl = audioPlayerRef.current || new Audio();
       activeAudioRef.current = audioEl;
 
@@ -664,7 +666,7 @@ export default function App() {
     setIsLoadingReplies(true);
     const scen = scenarioOverride || selectedScenario;
     try {
-      const resp = await fetch('http://127.0.0.1:8000/api/ai/suggest-replies', {
+      const resp = await fetch(`${API_BASE_URL}/api/ai/suggest-replies`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -745,7 +747,7 @@ export default function App() {
     }
 
     try {
-      const resp = await fetch('http://127.0.0.1:8000/api/translate', {
+      const resp = await fetch(`${API_BASE_URL}/api/translate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -904,7 +906,8 @@ export default function App() {
     isProcessingVoiceRef.current = true;
     
     // In Live Mode: determine current speaker turn and appropriate language pair
-    const turn = currentSpeakerTurnRef.current || 'A';
+    const isMainPage2 = currentStage === 'translator';
+    const turn = isMainPage2 ? 'A' : (currentSpeakerTurnRef.current || 'A');
     setLastSpeakerTurn(turn);
 
     // Read active selected target and source languages directly:
@@ -914,8 +917,8 @@ export default function App() {
     const langA = activeSource;
     const langB = activeTarget;
 
-    let sLang = forceInputLang || (turn === 'A' ? (sourceLang !== 'auto' ? sourceLang : 'auto') : langB);
-    let tLang = forceTargetLang || (turn === 'A' ? langB : (sourceLang !== 'auto' ? sourceLang : langA));
+    let sLang = forceInputLang || (isMainPage2 ? (sourceLang !== 'auto' ? sourceLang : 'auto') : (turn === 'A' ? (sourceLang !== 'auto' ? sourceLang : 'auto') : langB));
+    let tLang = forceTargetLang || (isMainPage2 ? langB : (turn === 'A' ? langB : (sourceLang !== 'auto' ? sourceLang : langA)));
 
     setSpeakerState('translating');
     liveStatusRef.current = 'translating';
@@ -938,7 +941,7 @@ export default function App() {
       engineUsed = 'offline_engine';
     } else {
       try {
-        const resp = await fetch('http://127.0.0.1:8000/api/translate', {
+        const resp = await fetch(`${API_BASE_URL}/api/translate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -966,7 +969,7 @@ export default function App() {
           if (data.detected_code && data.detected_code === tLang) {
             const reversedTarget = (tLang === langB ? langA : langB);
             try {
-              const revResp = await fetch('http://127.0.0.1:8000/api/translate', {
+              const revResp = await fetch(`${API_BASE_URL}/api/translate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1051,11 +1054,14 @@ export default function App() {
       isProcessingVoiceRef.current = false;
 
       if (isLiveActiveRef.current) {
-        // Automatically alternate speaker turn for continuous hands-free two-way conversation!
-        if (twoWayAutoSwitchRef.current) {
+        // Automatically alternate speaker turn ONLY if on workspace page AND twoWayAutoSwitch is enabled
+        if (!isMainPage2 && twoWayAutoSwitchRef.current) {
           const nextTurn = (turn === 'A' ? 'B' : 'A');
           currentSpeakerTurnRef.current = nextTurn;
           setCurrentSpeakerTurn(nextTurn);
+        } else {
+          currentSpeakerTurnRef.current = 'A';
+          setCurrentSpeakerTurn('A');
         }
 
         setSpeakerState('listening');
@@ -1072,7 +1078,7 @@ export default function App() {
         liveStatusRef.current = 'idle';
       }
     });
-  }, [sourceLang, targetLang, speakerInputLang, speakerTargetLang, isEffectivelyOffline, history, selectedScenario, speakTranslatedSentence]);
+  }, [currentStage, sourceLang, targetLang, speakerInputLang, speakerTargetLang, isEffectivelyOffline, history, selectedScenario, speakTranslatedSentence]);
 
   // Sentence Completion & Dispatch: submits only after complete utterance
   const finalizeAndSubmitUtterance = useCallback(() => {
@@ -1146,13 +1152,15 @@ export default function App() {
     sr.interimResults = true;
 
     // Use current speaker turn to set recognition language:
+    const isMainPage2 = currentStage === 'translator';
     const activeTarget = (targetLang !== 'auto' && targetLang) ? targetLang : (speakerTargetLang || 'en');
     const activeSource = (sourceLang !== 'auto' && sourceLang) ? sourceLang : (speakerInputLang || 'te');
 
-    const turn = currentSpeakerTurnRef.current || 'A';
+    const turn = isMainPage2 ? 'A' : (currentSpeakerTurnRef.current || 'A');
     const langA = activeSource;
     const langB = activeTarget;
-    const activeLang = turn === 'A' ? langA : langB;
+    // On Main Live Interpreter Page 2, always listen to user's selected source language (or Telugu/Indic by default)
+    const activeLang = isMainPage2 ? (sourceLang !== 'auto' ? sourceLang : 'te') : (turn === 'A' ? langA : langB);
 
     sr.lang = SPEECH_LANGS[activeLang]?.code || (
       activeLang === 'kn' ? 'kn-IN' : 
@@ -1224,8 +1232,15 @@ export default function App() {
     sr.onerror = (e) => {
       if (e.error === 'no-speech' && isLiveActiveRef.current && !isProcessingVoiceRef.current) {
         setTimeout(() => {
-          if (isLiveActiveRef.current && !isProcessingVoiceRef.current) startLiveTurn();
+          if (isLiveActiveRef.current && !isProcessingVoiceRef.current && startLiveTurnRef.current) {
+            startLiveTurnRef.current();
+          }
         }, 150);
+      } else if (e.error === 'not-allowed') {
+        showToast("⚠️ Microphone access denied. Please click the lock icon in the address bar and allow microphone.");
+        setIsLiveActive(false);
+        isLiveActiveRef.current = false;
+        setSpeakerState('idle');
       } else if (e.error !== 'aborted') {
         console.warn("Live listening notice:", e.error);
       }
@@ -1240,12 +1255,12 @@ export default function App() {
       // Seamlessly restart if user is still in listening/transcribing state
       if (isLiveActiveRef.current && !isProcessingVoiceRef.current) {
         setTimeout(() => {
-          if (isLiveActiveRef.current && !isProcessingVoiceRef.current) {
+          if (isLiveActiveRef.current && !isProcessingVoiceRef.current && startLiveTurnRef.current) {
             try {
-              sr.start();
+              startLiveTurnRef.current();
             } catch (err) {}
           }
-        }, 50);
+        }, 80);
       }
     };
 
@@ -1257,7 +1272,7 @@ export default function App() {
     } catch (e) {
       console.warn("SR start notice:", e);
     }
-  }, [sourceLang, targetLang, speakerInputLang, speakerTargetLang]);
+  }, [currentStage, sourceLang, targetLang, speakerInputLang, speakerTargetLang]);
 
   useEffect(() => {
     startLiveTurnRef.current = startLiveTurn;
@@ -1415,7 +1430,7 @@ export default function App() {
   const handleExplain = async () => {
     if (!inputText || !translatedText) return;
     try {
-      const resp = await fetch('http://127.0.0.1:8000/api/ai/explain', {
+      const resp = await fetch(`${API_BASE_URL}/api/ai/explain`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1437,7 +1452,7 @@ export default function App() {
   const handleGetAlternatives = async () => {
     if (!inputText) return;
     try {
-      const resp = await fetch('http://127.0.0.1:8000/api/ai/alternatives', {
+      const resp = await fetch(`${API_BASE_URL}/api/ai/alternatives`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1458,7 +1473,7 @@ export default function App() {
   const handleGrammarCheck = async () => {
     if (!inputText) return;
     try {
-      const resp = await fetch('http://127.0.0.1:8000/api/ai/grammar', {
+      const resp = await fetch(`${API_BASE_URL}/api/ai/grammar`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: inputText, lang: sourceLang })
@@ -1505,7 +1520,7 @@ export default function App() {
       setIsPronouncing(false);
 
       try {
-        const resp = await fetch('http://127.0.0.1:8000/api/pronunciation/score', {
+        const resp = await fetch(`${API_BASE_URL}/api/pronunciation/score`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1557,7 +1572,7 @@ export default function App() {
     formData.append('target_lang', targetLang);
 
     try {
-      const resp = await fetch('http://127.0.0.1:8000/api/document/translate', {
+      const resp = await fetch(`${API_BASE_URL}/api/document/translate`, {
         method: 'POST',
         body: formData
       });
@@ -1579,7 +1594,7 @@ export default function App() {
     const tLang = speaker === 'A' ? convSpeakerB_Lang : convSpeakerA_Lang;
 
     try {
-      const resp = await fetch('http://127.0.0.1:8000/api/translate', {
+      const resp = await fetch(`${API_BASE_URL}/api/translate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 

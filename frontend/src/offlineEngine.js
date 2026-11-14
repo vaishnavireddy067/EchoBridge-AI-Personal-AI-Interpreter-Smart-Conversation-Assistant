@@ -111,6 +111,38 @@ export const OFFLINE_PHRASEBOOK = [
   },
   {
     category: "Conversation",
+    sources: [
+      "హలో నేను చాలా టైర్డ్ కొన్నాను. సో నేను ఇంటికి వెళ్ళాలి అనుకుంటున్నాను.",
+      "హలో నేను చాలా టైర్డ్ కొన్నాను సో నేను ఇంటికి వెళ్ళాలి అనుకుంటున్నాను",
+      "హలో నేను చాలా టైర్డ్ అయ్యాను సో నేను ఇంటికి వెళ్ళాలి అనుకుంటున్నాను",
+      "హలో నేను చాలా టైర్డ్ అయ్యాను. సో నేను ఇంటికి వెళ్ళాలి అనుకుంటున్నాను.",
+      "నేను చాలా అలసిపోయాను",
+      "nenu chala tired ayyanu so nenu intiki vellali anukuntunnanu",
+      "hello nenu chala tired ayyanu so nenu intiki vellali anukuntunnanu"
+    ],
+    translations: {
+      en: "Hello, I am very tired. So I think I should go home.",
+      hi: "नमस्ते, मैं बहुत थक गया हूँ। इसलिए मुझे लगता है कि मुझे घर जाना चाहिए।",
+      te: "హలో, నేను చాలా అలసిపోయాను. కాబట్టి నేను ఇంటికి వెళ్లాలనుకుంటున్నాను.",
+      kn: "ಹಲೋ, ನಾನು ತುಂಬಾ ದಣಿದಿದ್ದೇನೆ. ಆದ್ದರಿಂದ ನಾನು ಮನೆಗೆ ಹೋಗಬೇಕೆಂದುಕೊಂಡಿದ್ದೇನೆ."
+    }
+  },
+  {
+    category: "Conversation",
+    sources: [
+      "meeting ki late avutunna, please wait cheyyi",
+      "meeting ki late avutunna please wait cheyyi",
+      "meeting ki late avtundi please wait chey",
+      "మీటింగ్‌కి లేట్ అవుతున్నా ప్లీజ్ వెయిట్ చెయ్యి"
+    ],
+    translations: {
+      en: "I am running late for the meeting, please wait.",
+      hi: "मुझे मीटिंग के लिए देर हो रही है, कृपया प्रतीक्षा करें।",
+      te: "మీటింగ్‌కి ఆలస్యం అవుతున్నాను, దయచేసి వేచి ఉండండి."
+    }
+  },
+  {
+    category: "Conversation",
     sources: ["నేను బాగున్నాను", "nenu bagunnanu", "i am fine", "i am good"],
     translations: {
       en: "I am fine, thank you",
