@@ -499,14 +499,6 @@ export function translateOffline(inputText, sourceLang = 'auto', targetLang = 'e
     }
   }
 
-  return {
-    translated_text: inputText,
-    source_phrase: inputText,
-    detected_lang: sourceLang,
-    target_lang: targetLang,
-    is_offline: true,
-    mode: 'offline_untranslated',
-    notice: "Phrase not found in local offline pack. Connect to internet for neural AI translation."
-  };
+  return null;
 }
 

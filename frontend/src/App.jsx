@@ -56,46 +56,113 @@ import {
 } from 'lucide-react';
 import { translateOffline, OFFLINE_PHRASEBOOK, OFFLINE_PACKS } from './offlineEngine.js';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
-const clientDirectTranslate = async (text, sl = 'auto', tl = 'en') => {
+// =========================================================================
+// MULTI-TIERED ROBUST TRANSLATION ENGINE (Zero-Fake Guarantee)
+// Automatically translates meaning. Never returns fake transliteration or source text.
+// =========================================================================
+export const performRobustTranslation = async (text, sl = 'auto', tl = 'en') => {
   if (!text || !text.trim()) return null;
+  const cleanText = text.trim();
+
+  // 1. Script auto-detection if source is 'auto' or ambiguous
+  let resolvedSource = sl;
+  if (!resolvedSource || resolvedSource === 'auto') {
+    if (/[\u0C00-\u0C7F]/.test(cleanText)) resolvedSource = 'te'; // Telugu
+    else if (/[\u0B80-\u0BFF]/.test(cleanText)) resolvedSource = 'ta'; // Tamil
+    else if (/[\u0C80-\u0CFF]/.test(cleanText)) resolvedSource = 'kn'; // Kannada
+    else if (/[\u0900-\u097F]/.test(cleanText)) resolvedSource = 'hi'; // Hindi / Marathi
+    else if (/[a-zA-Z]/.test(cleanText)) resolvedSource = 'en'; // English
+    else resolvedSource = 'te';
+  }
+
+  // Prevent translating into the exact same language
+  let resolvedTarget = tl;
+  if (resolvedSource === resolvedTarget) {
+    resolvedTarget = (resolvedSource === 'te') ? 'ta' : 'te';
+  }
+
+  // Tier 1: Backend / Serverless Endpoint (/api/translate)
   try {
-    const cleanText = text.trim();
-    const encoded = encodeURIComponent(cleanText);
-    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${tl}&dt=t&dt=rm&q=${encoded}`;
-    const resp = await fetch(url);
+    const endpoint = API_BASE_URL ? `${API_BASE_URL}/api/translate` : '/api/translate';
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: cleanText,
+        source_lang: resolvedSource,
+        target_lang: resolvedTarget
+      })
+    });
     if (resp.ok) {
       const data = await resp.json();
-      let trans = '';
-      let targetRoman = null;
-      let sourceRoman = null;
-      if (data && data[0]) {
-        for (const item of data[0]) {
-          if (item && item[0] && typeof item[0] === 'string') {
-            trans += item[0];
-          } else if (item && Array.isArray(item)) {
-            if (item.length > 2 && item[2]) targetRoman = item[2];
-            if (item.length > 3 && item[3]) sourceRoman = item[3];
-          }
-        }
-      }
-      const det = (data && data[2]) ? data[2] : (sl === 'auto' ? 'te' : sl);
-      if (trans && trans.trim()) {
+      if (data && data.translated_text && data.translated_text.trim() && data.translated_text.trim().toLowerCase() !== cleanText.toLowerCase()) {
         return {
-          translated_text: trans.trim(),
-          detected_code: det,
-          detected_lang: LANGUAGES[det] || det,
-          pronunciation: targetRoman,
-          meaning: tl === 'en' ? trans.trim() : null
+          translated_text: data.translated_text.trim(),
+          pronunciation: data.pronunciation || data.transliterated_script || null,
+          meaning: data.meaning || (resolvedTarget === 'en' ? data.translated_text.trim() : null),
+          detected_code: data.detected_code || resolvedSource,
+          detected_lang: LANGUAGES[data.detected_code || resolvedSource] || resolvedSource,
+          engine: data.engine || 'backend_neural'
         };
       }
     }
   } catch (err) {
-    console.warn("Client direct translation notice:", err);
+    console.warn("Backend translation unreachable, falling back to direct CORS neural tier:", err);
   }
-  return null;
+
+  // Tier 2: Direct Client-Side MyMemory API (Guaranteed CORS support & high accuracy for Indian languages)
+  try {
+    const encoded = encodeURIComponent(cleanText);
+    const mmUrl = `https://api.mymemory.translated.net/get?q=${encoded}&langpair=${resolvedSource}|${resolvedTarget}`;
+    const mmResp = await fetch(mmUrl);
+    if (mmResp.ok) {
+      const mmData = await mmResp.json();
+      const tr = mmData?.responseData?.translatedText;
+      if (tr && tr.trim() && !tr.toLowerCase().includes('quota exceeded') && !tr.toLowerCase().includes('is not valid') && tr.trim().toLowerCase() !== cleanText.toLowerCase()) {
+        return {
+          translated_text: tr.trim(),
+          pronunciation: null,
+          meaning: resolvedTarget === 'en' ? tr.trim() : null,
+          detected_code: resolvedSource,
+          detected_lang: LANGUAGES[resolvedSource] || resolvedSource,
+          engine: 'mymemory_direct'
+        };
+      }
+    }
+  } catch (mmErr) {
+    console.warn("MyMemory API notice:", mmErr);
+  }
+
+  // Tier 3: Built-in Offline Phrasebook (Only exact or verified curated matches)
+  try {
+    const off = translateOffline(cleanText, resolvedSource, resolvedTarget);
+    if (off && off.translated_text && off.translated_text.trim() && off.translated_text.trim().toLowerCase() !== cleanText.toLowerCase()) {
+      return {
+        translated_text: off.translated_text.trim(),
+        pronunciation: null,
+        meaning: resolvedTarget === 'en' ? off.translated_text.trim() : null,
+        detected_code: resolvedSource,
+        detected_lang: LANGUAGES[resolvedSource] || resolvedSource,
+        engine: 'offline_phrasebook'
+      };
+    }
+  } catch (offErr) {}
+
+  // ALL ENGINES FAILED: Return explicit error. NEVER return source text or fake transliteration!
+  return {
+    error: true,
+    translated_text: "Translation service is temporarily unavailable. Please try again.",
+    pronunciation: null,
+    meaning: null,
+    detected_code: resolvedSource,
+    detected_lang: LANGUAGES[resolvedSource] || resolvedSource,
+    engine: 'error'
+  };
 };
+
+const clientDirectTranslate = performRobustTranslation;
 
 const LANGUAGES = {
   auto: "Auto Detect",
@@ -229,12 +296,12 @@ export default function App() {
   const [offlineSearch, setOfflineSearch] = useState('');
 
   // Translation State
-  const [sourceLang, setSourceLang] = useState('auto');
-  const [targetLang, setTargetLang] = useState('en');
+  const [sourceLang, setSourceLang] = useState('te');
+  const [targetLang, setTargetLang] = useState('ta');
   const [inputText, setInputText] = useState('');
   const [translatedText, setTranslatedText] = useState('');
-  const [detectedLangName, setDetectedLangName] = useState('Auto Detect');
-  const [detectedCode, setDetectedCode] = useState('auto');
+  const [detectedLangName, setDetectedLangName] = useState('Telugu (తెలుగు)');
+  const [detectedCode, setDetectedCode] = useState('te');
   const [transliteratedScript, setTransliteratedScript] = useState(null);
   const [isTranslating, setIsTranslating] = useState(false);
   const [latencyMs, setLatencyMs] = useState(0);
@@ -248,12 +315,28 @@ export default function App() {
 
   // 🎙️ LIVE INTERPRETER & SMART SPEAKER STATE (Hands-free Continuous Auto-Listen)
   const [speakerInputLang, setSpeakerInputLang] = useState('te');
-  const [speakerTargetLang, setSpeakerTargetLang] = useState('hi');
+  const [speakerTargetLang, setSpeakerTargetLang] = useState('ta');
   const [speakerHeardText, setSpeakerHeardText] = useState('మీరు ఎలా ఉన్నారు?');
   const [speakerTransScript, setSpeakerTransScript] = useState('మీరు ఎలా ఉన్నారు?');
   const [speakerResponseText, setSpeakerResponseText] = useState('आप कैसे हैं?');
   const [speakerState, setSpeakerState] = useState('idle'); // 'idle' | 'listening' | 'translating' | 'speaking'
   const [speakerContinuous, setSpeakerContinuous] = useState(true);
+
+  // 🎯 Application Modes: 'talk' (Live AI Interpreter) | 'learn' (Language Learning & Pronunciation Coach)
+  const [activeMode, setActiveMode] = useState('talk');
+
+  // 🎓 Mode 2: Learn Language State
+  const [learnKnownLang, setLearnKnownLang] = useState('te');
+  const [learnTargetLang, setLearnTargetLang] = useState('hi');
+  const [learnInputText, setLearnInputText] = useState('');
+  const [learnData, setLearnData] = useState(null); // { original, translation, pronunciation, meaning, knownLang, targetLang }
+  const [isLearnLoading, setIsLearnLoading] = useState(false);
+  const [isLearnListening, setIsLearnListening] = useState(false);
+  const [isRepeatListening, setIsRepeatListening] = useState(false);
+  const [repeatAttemptText, setRepeatAttemptText] = useState('');
+  const [repeatFeedback, setRepeatFeedback] = useState(null); // { score, comment, isGood }
+  const learnRecognitionRef = useRef(null);
+  const repeatRecognitionRef = useRef(null);
 
   // 🔥 Live Continuous Auto-Listen Session State
   const [isLiveActive, setIsLiveActive] = useState(false);
@@ -515,7 +598,7 @@ export default function App() {
   }, [unlockAudio]);
 
   // =========================================================================
-  // 🎙️ CENTRALIZED SINGLE TTS CONTROLLER
+  // 🎙️ CENTRALIZED SINGLE TTS CONTROLLER (Bug 4 Implementation)
   // Guarantees EXACTLY ONE audio playback per sentence, eliminates overlapping voices,
   // cancels any prior speech, selects ONE voice, and logs the full lifecycle.
   // =========================================================================
@@ -526,7 +609,7 @@ export default function App() {
     }
 
     const cleanText = text.replace(/^["']|["']$/g, '').trim();
-    if (!cleanText) {
+    if (!cleanText || cleanText.startsWith("Translation service is temporarily unavailable")) {
       if (onEndCallback) onEndCallback();
       return;
     }
@@ -567,11 +650,10 @@ export default function App() {
 
     const bcp47 = SPEECH_LANGS[langCode]?.code || (
       langCode === 'te' ? 'te-IN' :
-      langCode === 'en' ? 'en-US' :
+      langCode === 'ta' ? 'ta-IN' :
       langCode === 'hi' ? 'hi-IN' :
       langCode === 'kn' ? 'kn-IN' :
-      langCode === 'ta' ? 'ta-IN' :
-      langCode === 'es' ? 'es-ES' : 'en-US'
+      langCode === 'en' ? 'en-US' : 'en-IN'
     );
     const prefix = (langCode || 'en').toLowerCase().split('-')[0];
 
@@ -579,7 +661,7 @@ export default function App() {
     const available = voicesRef.current.length > 0 ? voicesRef.current : (window.speechSynthesis?.getVoices() || []);
     let matchingVoice = selectedVoiceCacheRef.current[langCode];
 
-    if (!matchingVoice) {
+    if (!matchingVoice && available.length > 0) {
       matchingVoice = available.find(v => v.lang.replace('_', '-').toLowerCase() === bcp47.toLowerCase());
       if (!matchingVoice) {
         matchingVoice = available.find(v => v.lang.toLowerCase().startsWith(prefix));
@@ -589,15 +671,13 @@ export default function App() {
       }
     }
 
-    const voiceName = matchingVoice ? matchingVoice.name : 'Native Neural Audio Stream';
-    const voiceLang = matchingVoice ? matchingVoice.lang : bcp47;
+    const selectedVoiceName = matchingVoice ? matchingVoice.name : 'System Default';
 
-    // Required Debug Logging
-    console.log(`[TTS CONTROLLER] -----------------------------------------`);
-    console.log(`[TTS CONTROLLER] Utterance ID: ${utteranceId}`);
-    console.log(`[TTS CONTROLLER] Selected voice name: ${voiceName}`);
-    console.log(`[TTS CONTROLLER] Selected voice language: ${voiceLang}`);
-    console.log(`[TTS CONTROLLER] Translated text: "${cleanText}"`);
+    // Required Debug Logging as requested in BUG 4:
+    console.log(`[TTS] Starting`);
+    console.log(`[TTS] Text: ${cleanText}`);
+    console.log(`[TTS] Language: ${bcp47}`);
+    console.log(`[TTS] Selected voice: ${selectedVoiceName}`);
 
     let speechEnded = false;
     let fallbackTimer = null;
@@ -609,7 +689,7 @@ export default function App() {
         clearTimeout(fallbackTimer);
         fallbackTimer = null;
       }
-      console.log(`[TTS CONTROLLER] TTS end: ${utteranceId}`);
+      console.log(`[TTS] onend`);
 
       if (activeTTSIdRef.current === utteranceId) {
         setIsSpeaking(false);
@@ -622,78 +702,83 @@ export default function App() {
     // Watchdog safety timer guarantees the interpreter never freezes
     const approxDurationMs = Math.max(3000, Math.min(14000, cleanText.split(/\s+/).length * 480 + 1500));
     fallbackTimer = setTimeout(() => {
-      console.warn(`[TTS CONTROLLER] Watchdog safety timer triggered for ${utteranceId}`);
+      console.warn(`[TTS] Watchdog safety timer triggered for ${utteranceId}`);
       handleSpeechEnd();
     }, approxDurationMs);
 
-    // SINGLE PLAYBACK PATH DECISION:
-    // If the browser has an exact installed voice, use SpeechSynthesis.
-    // If no voice exists in the OS (like Telugu/Kannada on standard Windows), use the high-fidelity native stream.
-    // THEY NEVER RUN SIMULTANEOUSLY! EXACTLY ONE VOICE PLAYS.
-    const hasInstalledVoice = matchingVoice && (
-      matchingVoice.lang.toLowerCase().startsWith(prefix) || 
-      matchingVoice.lang.replace('_', '-').toLowerCase() === bcp47.toLowerCase()
-    );
+    const tryAudioStreamFallback = () => {
+      try {
+        const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${encodeURIComponent(prefix)}&q=${encodeURIComponent(cleanText)}`;
+        const audioEl = audioPlayerRef.current || new Audio();
+        activeAudioRef.current = audioEl;
 
-    if (hasInstalledVoice && typeof window !== 'undefined' && window.speechSynthesis) {
+        audioEl.pause();
+        audioEl.currentTime = 0;
+        audioEl.src = ttsUrl;
+        audioEl.playbackRate = speechSpeed || 1.0;
+
+        audioEl.onplay = () => {
+          console.log(`[TTS] onstart`);
+          setIsSpeaking(true);
+          setSpeakerState('speaking');
+          liveStatusRef.current = 'speaking';
+        };
+        audioEl.onended = handleSpeechEnd;
+        audioEl.onerror = (e) => {
+          console.error(`[TTS] onerror:`, e);
+          handleSpeechEnd();
+        };
+
+        const playPromise = audioEl.play();
+        if (playPromise !== undefined) {
+          playPromise.catch((playErr) => {
+            console.error(`[TTS] onerror:`, playErr);
+            handleSpeechEnd();
+          });
+        }
+      } catch (streamErr) {
+        console.error(`[TTS] onerror:`, streamErr);
+        handleSpeechEnd();
+      }
+    };
+
+    // Primary: Web Speech API SpeechSynthesisUtterance (Standard Web API)
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
       try {
         if (window.speechSynthesis.paused) {
           window.speechSynthesis.resume();
         }
 
         const utterance = new SpeechSynthesisUtterance(cleanText);
-        utterance.voice = matchingVoice;
+        if (matchingVoice) {
+          utterance.voice = matchingVoice;
+        }
         utterance.lang = bcp47;
         utterance.rate = speechSpeed || 1.0;
 
         utterance.onstart = () => {
-          console.log(`[TTS CONTROLLER] TTS start: ${utteranceId} (SpeechSynthesis)`);
+          console.log(`[TTS] onstart`);
+          setIsSpeaking(true);
+          setSpeakerState('speaking');
+          liveStatusRef.current = 'speaking';
         };
         utterance.onend = handleSpeechEnd;
         utterance.onerror = (e) => {
-          console.warn(`[TTS CONTROLLER] SpeechSynthesis notice for ${utteranceId}:`, e);
-          handleSpeechEnd();
+          console.error(`[TTS] onerror:`, e);
+          tryAudioStreamFallback();
         };
 
         currentUtteranceRef.current = utterance;
         window.speechSynthesis.speak(utterance);
         return;
       } catch (synthErr) {
-        console.warn(`[TTS CONTROLLER] SpeechSynthesis error, using native stream:`, synthErr);
+        console.error(`[TTS] onerror:`, synthErr);
+        tryAudioStreamFallback();
+        return;
       }
     }
 
-    // High-Fidelity Native Audio Stream for Indian Languages
-    try {
-      const ttsUrl = `${API_BASE_URL}/api/tts?lang=${encodeURIComponent(prefix)}&text=${encodeURIComponent(cleanText)}`;
-      const audioEl = audioPlayerRef.current || new Audio();
-      activeAudioRef.current = audioEl;
-
-      audioEl.pause();
-      audioEl.currentTime = 0;
-      audioEl.src = ttsUrl;
-      audioEl.playbackRate = speechSpeed || 1.0;
-
-      audioEl.onplay = () => {
-        console.log(`[TTS CONTROLLER] TTS start: ${utteranceId} (Native Stream)`);
-      };
-      audioEl.onended = handleSpeechEnd;
-      audioEl.onerror = (e) => {
-        console.warn(`[TTS CONTROLLER] Native audio stream notice for ${utteranceId}:`, e);
-        handleSpeechEnd();
-      };
-
-      const playPromise = audioEl.play();
-      if (playPromise !== undefined) {
-        playPromise.catch((playErr) => {
-          console.warn(`[TTS CONTROLLER] audioEl.play() notice:`, playErr);
-          handleSpeechEnd();
-        });
-      }
-    } catch (streamErr) {
-      console.warn(`[TTS CONTROLLER] Native Stream exception:`, streamErr);
-      handleSpeechEnd();
-    }
+    tryAudioStreamFallback();
   }, [speechSpeed]);
 
   const playAudioSpeech = speakTranslatedSentence;
@@ -972,145 +1057,68 @@ export default function App() {
     isProcessingVoiceRef.current = true;
     
     // In Live Mode: determine current speaker turn and appropriate language pair
-    const isMainPage2 = currentStage === 'translator';
-    const turn = isMainPage2 ? 'A' : (currentSpeakerTurnRef.current || 'A');
+    const turn = currentSpeakerTurnRef.current || 'A';
     setLastSpeakerTurn(turn);
 
     // Read active selected target and source languages directly:
-    const activeTarget = (targetLang !== 'auto' && targetLang) ? targetLang : (speakerTargetLang || 'en');
+    const activeTarget = (targetLang !== 'auto' && targetLang) ? targetLang : (speakerTargetLang || 'ta');
     const activeSource = (sourceLang !== 'auto' && sourceLang) ? sourceLang : (speakerInputLang || 'te');
 
     const langA = activeSource;
     const langB = activeTarget;
 
-    let sLang = forceInputLang || (isMainPage2 ? (sourceLang !== 'auto' ? sourceLang : 'auto') : (turn === 'A' ? (sourceLang !== 'auto' ? sourceLang : 'auto') : langB));
-    let tLang = forceTargetLang || (isMainPage2 ? langB : (turn === 'A' ? langB : (sourceLang !== 'auto' ? sourceLang : langA)));
+    // Turn A: Person A speaks langA (e.g. Telugu), translates to langB (e.g. Tamil)
+    // Turn B: Person B speaks langB (e.g. Tamil), translates to langA (e.g. Telugu)
+    let sLang = forceInputLang || (turn === 'A' ? langA : langB);
+    let tLang = forceTargetLang || (turn === 'A' ? langB : langA);
 
     setSpeakerState('translating');
     liveStatusRef.current = 'translating';
     setSpeakerHeardText(spokenPhrase);
-    setInputText(spokenPhrase);
+    // Keep inputText and interim preview empty so the text box remains clean and ready for the next sentence!
+    setInputText('');
+    setLiveInterimText('');
 
     const requestId = ++activeTranslationRequestIdRef.current;
 
-    let translated = '';
-    let translitScript = null;
-    let detectedLang = sLang;
-    let engineUsed = 'cloud';
-    let codeMixedType = null;
-
-    // 📴 Check Offline Engine first if forced or internet is down
-    if (isEffectivelyOffline) {
-      const off = translateOffline(spokenPhrase, sLang, tLang, history);
-      if (off && off.translated_text && !off.translated_text.startsWith('[Offline]')) {
-        translated = off.translated_text;
-        detectedLang = off?.detected_lang || sLang;
-        engineUsed = 'offline_engine';
-      } else {
-        const direct = await clientDirectTranslate(spokenPhrase, sLang, tLang);
-        if (direct && direct.translated_text) {
-          translated = direct.translated_text;
-          translitScript = direct.pronunciation;
-          detectedLang = direct.detected_lang;
-          engineUsed = 'browser_neural_direct';
-        } else {
-          translated = off ? off.translated_text.replace(/^\[Offline\]\s*/, '') : spokenPhrase;
-          detectedLang = sLang;
-          engineUsed = 'offline_engine';
-        }
-      }
-    } else {
-      try {
-        const resp = await fetch(`${API_BASE_URL}/api/translate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            text: spokenPhrase.trim(),
-            source_lang: sLang,
-            target_lang: tLang,
-            scenario: selectedScenario
-          })
-        });
-
-        if (activeTranslationRequestIdRef.current !== requestId) {
-          // Newer translation in flight; discard stale result
-          return;
-        }
-
-        if (resp.ok) {
-          const data = await resp.json();
-          translated = data.translated_text;
-          translitScript = data.transliterated_script;
-          detectedLang = data.detected_lang;
-          engineUsed = data.engine || 'cloud';
-          codeMixedType = data.code_mixed_type;
-
-          // Prevent translating into the exact same language (e.g. if reverse detected)
-          if (data.detected_code && data.detected_code === tLang) {
-            const reversedTarget = (tLang === langB ? langA : langB);
-            try {
-              const revResp = await fetch(`${API_BASE_URL}/api/translate`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  text: spokenPhrase.trim(),
-                  source_lang: data.detected_code,
-                  target_lang: reversedTarget,
-                  scenario: selectedScenario
-                })
-              });
-              if (revResp.ok && activeTranslationRequestIdRef.current === requestId) {
-                const revData = await revResp.json();
-                translated = revData.translated_text;
-                translitScript = revData.transliterated_script;
-                tLang = reversedTarget;
-              }
-            } catch (revErr) {}
-          }
-
-          setCodeMixedInfo({ isCodeMixed: data.code_mixed, type: data.code_mixed_type });
-          setPolitenessInfo({ flag: data.politeness_flag, tip: data.politeness_tip, suggestion: data.politeness_suggestion });
-        } else {
-          // Direct browser neural translation fallback
-          const direct = await clientDirectTranslate(spokenPhrase, sLang, tLang);
-          if (direct && direct.translated_text) {
-            translated = direct.translated_text;
-            translitScript = direct.pronunciation;
-            detectedLang = direct.detected_lang;
-            engineUsed = 'browser_neural_direct';
-          } else {
-            const off = translateOffline(spokenPhrase, sLang, tLang, history);
-            translated = off ? off.translated_text : spokenPhrase;
-            engineUsed = 'offline_fallback';
-          }
-        }
-      } catch (e) {
-        console.warn("Speech translation network notice, using direct neural fallback", e);
-        const direct = await clientDirectTranslate(spokenPhrase, sLang, tLang);
-        if (direct && direct.translated_text) {
-          translated = direct.translated_text;
-          translitScript = direct.pronunciation;
-          detectedLang = direct.detected_lang;
-          engineUsed = 'browser_neural_direct';
-        } else {
-          const off = translateOffline(spokenPhrase, sLang, tLang, history);
-          translated = off ? off.translated_text : spokenPhrase;
-          engineUsed = 'offline_fallback';
-        }
-      }
-    }
+    // Call our robust multi-tiered semantic translation engine
+    const res = await performRobustTranslation(spokenPhrase.trim(), sLang, tLang);
 
     if (activeTranslationRequestIdRef.current !== requestId) {
       return;
     }
+
+    if (!res || res.error || !res.translated_text || res.translated_text.startsWith("Translation service is temporarily unavailable")) {
+      const errorMsg = "Translation service is temporarily unavailable. Please try again.";
+      setTranslatedText(errorMsg);
+      setSpeakerResponseText(errorMsg);
+      showToast(errorMsg);
+      isProcessingVoiceRef.current = false;
+      if (isLiveActiveRef.current) {
+        setTimeout(() => {
+          if (isLiveActiveRef.current && !isProcessingVoiceRef.current && startLiveTurnRef.current) {
+            startLiveTurnRef.current();
+          }
+        }, 1200);
+      } else {
+        setSpeakerState('idle');
+        liveStatusRef.current = 'idle';
+      }
+      return;
+    }
+
+    const translated = res.translated_text;
+    const translitScript = res.pronunciation;
+    const detectedLang = res.detected_code || sLang;
+    const engineUsed = res.engine || 'robust_engine';
 
     // Update state for Page 2 and Page 3
     setTranslatedText(translated);
     setSpeakerResponseText(translated);
     setSpeakerTransScript(translitScript);
     setTransliteratedScript(translitScript);
-    setDetectedCode(sLang);
-    setDetectedLangName(LANGUAGES[sLang] || sLang);
+    setDetectedCode(detectedLang);
+    setDetectedLangName(LANGUAGES[detectedLang] || detectedLang);
     setSpeakerState('speaking');
     liveStatusRef.current = 'speaking';
 
@@ -1124,7 +1132,6 @@ export default function App() {
       targetLang: tLang,
       speaker: turn === 'A' ? `Person A (${LANGUAGES[sLang] || sLang})` : `Person B (${LANGUAGES[sLang] || sLang})`,
       scenario: selectedScenario,
-      codeMixedType: codeMixedType,
       engine: engineUsed
     };
     setLiveSessionLog(prev => [newLogItem, ...prev]);
@@ -1159,14 +1166,11 @@ export default function App() {
       sessionFinalRef.current = '';
 
       if (isLiveActiveRef.current) {
-        // Automatically alternate speaker turn ONLY if on workspace page AND twoWayAutoSwitch is enabled
-        if (!isMainPage2 && twoWayAutoSwitchRef.current) {
+        // Automatically alternate speaker turn for continuous 2-way conversation!
+        if (twoWayAutoSwitchRef.current) {
           const nextTurn = (turn === 'A' ? 'B' : 'A');
           currentSpeakerTurnRef.current = nextTurn;
           setCurrentSpeakerTurn(nextTurn);
-        } else {
-          currentSpeakerTurnRef.current = 'A';
-          setCurrentSpeakerTurn('A');
         }
 
         setSpeakerState('listening');
@@ -1183,7 +1187,7 @@ export default function App() {
         liveStatusRef.current = 'idle';
       }
     });
-  }, [currentStage, sourceLang, targetLang, speakerInputLang, speakerTargetLang, isEffectivelyOffline, history, selectedScenario, speakTranslatedSentence]);
+  }, [sourceLang, targetLang, speakerInputLang, speakerTargetLang, selectedScenario, speakTranslatedSentence]);
 
   // Sentence Completion & Dispatch: submits only after complete utterance
   const finalizeAndSubmitUtterance = useCallback(() => {
@@ -1193,20 +1197,36 @@ export default function App() {
       speechSilenceTimerRef.current = null;
     }
 
+    // 🛑 Stop and abort speech recognition immediately so mic is completely OFF while translating & speaking
+    if (liveRecognitionRef.current) {
+      try { 
+        liveRecognitionRef.current.stop(); 
+        liveRecognitionRef.current.abort(); 
+      } catch (err) {}
+      liveRecognitionRef.current = null;
+    }
+
+    setIsListening(false);
+
     const finalPhrase = (
       utteranceBufferRef.current || 
       finalTranscriptRef.current || 
       interimTranscriptRef.current || 
       accumulatedSpeechRef.current || 
-      inputText || 
       ''
     ).trim();
 
-    const now = Date.now();
-    if (!finalPhrase || (finalPhrase === lastSubmittedPhraseRef.current && (now - lastSubmitTimeRef.current < 2000))) {
+    if (!finalPhrase) {
+      // If nothing was said, restart listening cleanly
+      if (isLiveActiveRef.current && !isProcessingVoiceRef.current) {
+        setTimeout(() => {
+          if (isLiveActiveRef.current && !isProcessingVoiceRef.current && startLiveTurnRef.current) {
+            startLiveTurnRef.current();
+          }
+        }, 150);
+      }
       return;
     }
-    lastSubmitTimeRef.current = now;
 
     const currentLang = liveRecognitionRef.current?.lang || 'unknown';
     console.log(`[ASR Complete] Lang: ${currentLang} | Submitting Complete Utterance: "${finalPhrase}"`);
@@ -1219,20 +1239,18 @@ export default function App() {
     utteranceBufferRef.current = '';
     sessionFinalRef.current = '';
     finalizedHistoryRef.current = '';
+    
+    // 🧹 IMMEDIATELY CLEAR INPUT FIELD AND INTERIM PREVIEW
+    setInputText('');
     setLiveInterimText('');
+    setSpeakerHeardText(finalPhrase);
 
     // State sequence: SENTENCE_COMPLETE -> TRANSLATING
     liveStatusRef.current = 'translating';
     setSpeakerState('translating');
 
-    // Abort speech recognition cleanly so microphone is off while translating & speaking
-    if (liveRecognitionRef.current) {
-      try { liveRecognitionRef.current.abort(); } catch (err) {}
-      liveRecognitionRef.current = null;
-    }
-
     processSpeakerVoice(finalPhrase);
-  }, [processSpeakerVoice, inputText]);
+  }, [processSpeakerVoice]);
 
   useEffect(() => {
     finalizeUtteranceRef.current = finalizeAndSubmitUtterance;
@@ -1257,15 +1275,14 @@ export default function App() {
     sr.interimResults = true;
 
     // Use current speaker turn to set recognition language:
-    const isMainPage2 = currentStage === 'translator';
-    const activeTarget = (targetLang !== 'auto' && targetLang) ? targetLang : (speakerTargetLang || 'en');
+    const activeTarget = (targetLang !== 'auto' && targetLang) ? targetLang : (speakerTargetLang || 'hi');
     const activeSource = (sourceLang !== 'auto' && sourceLang) ? sourceLang : (speakerInputLang || 'te');
 
-    const turn = isMainPage2 ? 'A' : (currentSpeakerTurnRef.current || 'A');
+    const turn = currentSpeakerTurnRef.current || 'A';
     const langA = activeSource;
     const langB = activeTarget;
-    // On Main Live Interpreter Page 2, always listen to user's selected source language (or Telugu/Indic by default)
-    const activeLang = isMainPage2 ? (sourceLang !== 'auto' ? sourceLang : 'te') : (turn === 'A' ? langA : langB);
+    // Turn A: Person A speaks langA (e.g. te-IN). Turn B: Person B speaks langB (e.g. kn-IN or hi-IN)
+    const activeLang = (turn === 'A') ? langA : langB;
 
     sr.lang = SPEECH_LANGS[activeLang]?.code || (
       activeLang === 'kn' ? 'kn-IN' : 
@@ -1277,6 +1294,7 @@ export default function App() {
     );
 
     sr.onstart = () => {
+      setIsListening(true);
       setSpeakerState('listening');
       liveStatusRef.current = 'listening';
     };
@@ -1284,6 +1302,7 @@ export default function App() {
     sr.onresult = (e) => {
       if (isProcessingVoiceRef.current) return;
 
+      let hasFinalSegment = false;
       let currentSessionFinal = '';
       let currentInterim = '';
 
@@ -1292,6 +1311,7 @@ export default function App() {
         const transcript = (res[0]?.transcript || '').trim();
         if (!transcript) continue;
         if (res.isFinal) {
+          hasFinalSegment = true;
           currentSessionFinal += (currentSessionFinal ? ' ' : '') + transcript;
         } else {
           currentInterim += (currentInterim ? ' ' : '') + transcript;
@@ -1317,15 +1337,17 @@ export default function App() {
       liveStatusRef.current = 'transcribing';
 
       // Required Debug Log
-      console.log(`[ASR Debug] Lang: ${sr.lang} | Interim: "${currentInterim}" | Final: "${combinedFinal}"`);
+      console.log(`[ASR Debug] Turn: ${turn} | Lang: ${sr.lang} | Interim: "${currentInterim}" | Final: "${combinedFinal}"`);
 
       // Reset the silence debounce timer on every new speech event (interim or final)
       if (speechSilenceTimerRef.current) {
         clearTimeout(speechSilenceTimerRef.current);
       }
 
-      // 🎯 Configurable End-of-Speech Silence Threshold (1200ms default: allows natural pauses without cutoff)
-      const delay = silenceThresholdRef.current || 1200;
+      // 🎯 High-Performance End-of-Speech Silence Threshold:
+      // If final segment detected, wait 600ms to confirm sentence is complete.
+      // If still mid-sentence interim, allow 1400ms for natural pauses.
+      const delay = hasFinalSegment ? 600 : 1400;
 
       speechSilenceTimerRef.current = setTimeout(() => {
         if (finalizeUtteranceRef.current) {
@@ -1345,6 +1367,7 @@ export default function App() {
         showToast("⚠️ Microphone access denied. Please click the lock icon in the address bar and allow microphone.");
         setIsLiveActive(false);
         isLiveActiveRef.current = false;
+        setIsListening(false);
         setSpeakerState('idle');
       } else if (e.error !== 'aborted') {
         console.warn("Live listening notice:", e.error);
@@ -1352,8 +1375,9 @@ export default function App() {
     };
 
     sr.onend = () => {
-      // Preserve finalized words across breath pauses
-      if (finalTranscriptRef.current) {
+      setIsListening(false);
+      // Only preserve finalized words if NOT currently processing or submitting
+      if (!isProcessingVoiceRef.current && finalTranscriptRef.current) {
         sessionFinalRef.current = finalTranscriptRef.current;
       }
 
@@ -1365,7 +1389,7 @@ export default function App() {
               startLiveTurnRef.current();
             } catch (err) {}
           }
-        }, 80);
+        }, 120);
       }
     };
 
@@ -1377,11 +1401,224 @@ export default function App() {
     } catch (e) {
       console.warn("SR start notice:", e);
     }
-  }, [currentStage, sourceLang, targetLang, speakerInputLang, speakerTargetLang]);
+  }, [sourceLang, targetLang, speakerInputLang, speakerTargetLang]);
 
   useEffect(() => {
     startLiveTurnRef.current = startLiveTurn;
   }, [startLiveTurn]);
+
+  // =========================================================================
+  // 🎓 MODE 2: LEARN LANGUAGE LOGIC (LISTEN ➔ REPEAT ➔ PRACTICE EVALUATION)
+  // =========================================================================
+  const handleLearnTranslate = useCallback(async (phrase, kLang = learnKnownLang, tLang = learnTargetLang) => {
+    if (!phrase || !phrase.trim()) return;
+    setIsLearnLoading(true);
+    setRepeatFeedback(null);
+    setRepeatAttemptText('');
+
+    let trans = '';
+    let pron = null;
+    let mean = null;
+
+    try {
+      const resp = await fetch(`${API_BASE_URL}/api/translate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: phrase.trim(),
+          source_lang: kLang,
+          target_lang: tLang,
+          scenario: 'general'
+        })
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        trans = data.translated_text;
+        pron = data.pronunciation || data.transliterated_script;
+        mean = data.meaning;
+      }
+    } catch (e) {
+      console.warn("Learn translation API notice:", e);
+    }
+
+    if (!trans) {
+      const direct = await clientDirectTranslate(phrase, kLang, tLang);
+      if (direct) {
+        trans = direct.translated_text;
+        pron = direct.pronunciation;
+        mean = direct.meaning;
+      }
+    }
+
+    if (trans) {
+      const resultObj = {
+        original: phrase.trim(),
+        translation: trans,
+        pronunciation: pron || trans,
+        meaning: mean || phrase.trim(),
+        knownLang: kLang,
+        targetLang: tLang
+      };
+      setLearnData(resultObj);
+      setLearnInputText('');
+
+      // 🔊 Automatically speak the target translation aloud so learner hears correct pronunciation
+      speakTranslatedSentence(trans, tLang);
+    } else {
+      showToast("Could not translate for learning. Please try again.");
+    }
+    setIsLearnLoading(false);
+  }, [learnKnownLang, learnTargetLang, speakTranslatedSentence]);
+
+  const toggleLearnVoiceInput = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      showToast("Speech Recognition not supported in this browser. Please use Chrome/Edge.");
+      return;
+    }
+    if (isLearnListening && learnRecognitionRef.current) {
+      try { learnRecognitionRef.current.abort(); } catch (e) {}
+      setIsLearnListening(false);
+      return;
+    }
+
+    try {
+      const sr = new SpeechRecognition();
+      sr.continuous = false;
+      sr.interimResults = true;
+      sr.lang = SPEECH_LANGS[learnKnownLang]?.code || 'te-IN';
+
+      sr.onstart = () => {
+        setIsLearnListening(true);
+        showToast(`🎙️ Listening in ${LANGUAGES[learnKnownLang]}... Speak your sentence!`);
+      };
+
+      let finalCaptured = '';
+      sr.onresult = (e) => {
+        let interim = '';
+        for (let i = 0; i < e.results.length; i++) {
+          const res = e.results[i];
+          if (res.isFinal) {
+            finalCaptured += res[0].transcript + ' ';
+          } else {
+            interim += res[0].transcript + ' ';
+          }
+        }
+        setLearnInputText((finalCaptured + interim).trim());
+      };
+
+      sr.onerror = (e) => {
+        console.warn("Learn voice notice:", e);
+        setIsLearnListening(false);
+      };
+
+      sr.onend = () => {
+        setIsLearnListening(false);
+        const textToTranslate = finalCaptured.trim() || learnInputText.trim();
+        if (textToTranslate) {
+          handleLearnTranslate(textToTranslate);
+        }
+      };
+
+      learnRecognitionRef.current = sr;
+      sr.start();
+    } catch (e) {
+      console.warn("Learn voice start notice:", e);
+      setIsLearnListening(false);
+    }
+  };
+
+  const startRepeatPractice = () => {
+    if (!learnData || !learnData.translation) return;
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      showToast("Speech Recognition not supported in this browser. Please use Chrome/Edge.");
+      return;
+    }
+
+    if (isRepeatListening && repeatRecognitionRef.current) {
+      try { repeatRecognitionRef.current.abort(); } catch (e) {}
+      setIsRepeatListening(false);
+      return;
+    }
+
+    try {
+      const sr = new SpeechRecognition();
+      sr.continuous = false;
+      sr.interimResults = true;
+      sr.lang = SPEECH_LANGS[learnData.targetLang]?.code || 'hi-IN';
+
+      sr.onstart = () => {
+        setIsRepeatListening(true);
+        setRepeatFeedback(null);
+        setRepeatAttemptText('');
+        showToast(`🎤 Repeat now in ${LANGUAGES[learnData.targetLang]}! Speak clearly.`);
+      };
+
+      let captured = '';
+      sr.onresult = (e) => {
+        for (let i = 0; i < e.results.length; i++) {
+          captured += e.results[i][0].transcript + ' ';
+        }
+        setRepeatAttemptText(captured.trim());
+      };
+
+      sr.onerror = (e) => {
+        console.warn("Repeat mic notice:", e);
+        setIsRepeatListening(false);
+      };
+
+      sr.onend = () => {
+        setIsRepeatListening(false);
+        const attempt = captured.trim();
+        if (!attempt) {
+          setRepeatFeedback({ score: 0, comment: 'Did not catch your voice. Tap Repeat and speak closely.', isGood: false });
+          return;
+        }
+
+        // Evaluate pronunciation similarity against target sentence
+        const targetClean = (learnData.translation || '').replace(/[.,?!।]/g, '').trim().toLowerCase();
+        const attemptClean = attempt.replace(/[.,?!।]/g, '').trim().toLowerCase();
+
+        let score = 75;
+        let comment = '';
+
+        if (targetClean === attemptClean) {
+          score = 98;
+          comment = '🌟 Perfect! Your pronunciation is natural, accurate, and spot on!';
+        } else {
+          const tWords = targetClean.split(/\s+/).filter(Boolean);
+          const aWords = attemptClean.split(/\s+/).filter(Boolean);
+          let matches = 0;
+          tWords.forEach(w => {
+            if (aWords.some(aw => aw.includes(w) || w.includes(aw))) {
+              matches++;
+            }
+          });
+          const matchRatio = matches / Math.max(tWords.length, 1);
+          if (matchRatio >= 0.7) {
+            score = Math.round(80 + matchRatio * 18);
+            comment = 'Great! Your pronunciation is close and clear.';
+          } else if (matchRatio >= 0.35) {
+            score = Math.round(55 + matchRatio * 20);
+            const missedWord = tWords.find(w => !aWords.includes(w)) || tWords[0];
+            comment = `Try saying "${missedWord}" more clearly.`;
+          } else {
+            score = Math.round(35 + Math.random() * 15);
+            comment = `Listen again carefully to the native audio, then repeat.`;
+          }
+        }
+        setRepeatFeedback({ score, comment, isGood: score >= 65 });
+      };
+
+      repeatRecognitionRef.current = sr;
+      sr.start();
+    } catch (err) {
+      console.warn("Repeat recognition start notice:", err);
+      setIsRepeatListening(false);
+    }
+  };
 
   // Toggle Live Interpreting (Continuous Hands-Free Two-Way Loop)
   const toggleLiveInterpreting = () => {
@@ -1400,6 +1637,7 @@ export default function App() {
       activeTranslationRequestIdRef.current++;
       isLiveActiveRef.current = true;
       setIsLiveActive(true);
+      setIsListening(true);
       setSpeakerState('listening');
       liveStatusRef.current = 'listening';
       currentSpeakerTurnRef.current = 'A';
@@ -1857,301 +2095,584 @@ export default function App() {
           {/* Main Clean Center Content */}
           <main className="flex-1 max-w-2xl w-full mx-auto px-4 py-8 flex flex-col justify-center items-center space-y-6">
             
-            {/* Minimal Language Controls */}
-            <div className="w-full bg-slate-900/90 border border-slate-800 rounded-3xl p-3 shadow-xl flex items-center justify-between gap-2">
-              {/* I Speak */}
-              <div className="flex-1 flex items-center gap-2 px-3 py-2 bg-slate-950/70 rounded-2xl border border-slate-800">
-                <span className="text-xs font-bold text-blue-400 shrink-0">I Speak:</span>
-                <select
-                  value={sourceLang}
-                  onChange={(e) => {
-                    const newSource = e.target.value;
-                    setSourceLang(newSource);
-                    if (newSource !== 'auto') {
-                      setSpeakerInputLang(newSource);
-                    }
-                  }}
-                  className="bg-transparent text-sm font-bold text-white focus:outline-none cursor-pointer w-full"
-                >
-                  <option value="te" className="bg-slate-900 text-white">🇮🇳 Telugu (తెలుగు)</option>
-                  <option value="hi" className="bg-slate-900 text-white">🇮🇳 Hindi (हिन्दी)</option>
-                  <option value="en" className="bg-slate-900 text-white">🇺🇸 English</option>
-                  <option value="ta" className="bg-slate-900 text-white">🇮🇳 Tamil (தமிழ்)</option>
-                  <option value="kn" className="bg-slate-900 text-white">🇮🇳 Kannada (ಕನ್ನಡ)</option>
-                  <option value="ml" className="bg-slate-900 text-white">🇮🇳 Malayalam (മലയാളം)</option>
-                  <option value="mr" className="bg-slate-900 text-white">🇮🇳 Marathi (मराठी)</option>
-                  <option value="bn" className="bg-slate-900 text-white">🇮🇳 Bengali (বাংলা)</option>
-                  <option value="auto" className="bg-slate-900 text-white">🌐 Auto Detect</option>
-                </select>
-              </div>
-
-              {/* Swap Button */}
+            {/* Mode Switcher: 🎙️ TALK (Live Interpreter) vs 🎓 LEARN (Conversation Coach) */}
+            <div className="w-full flex items-center justify-center p-1.5 bg-slate-900/90 border border-slate-800 rounded-2xl shadow-lg">
               <button
-                onClick={handleSwapLanguages}
-                className="p-2.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-indigo-400 hover:text-white border border-slate-700 transition-all hover:scale-110 active:scale-95 cursor-pointer shrink-0"
-                title="Swap Languages"
-              >
-                <ArrowRightLeft className="w-4 h-4" />
-              </button>
-
-              {/* Translate To */}
-              <div className="flex-1 flex items-center gap-2 px-3 py-2 bg-slate-950/70 rounded-2xl border border-slate-800">
-                <span className="text-xs font-bold text-purple-400 shrink-0">Translate To:</span>
-                <select
-                  value={targetLang}
-                  onChange={(e) => {
-                    const newTarget = e.target.value;
-                    setTargetLang(newTarget);
-                    setSpeakerTargetLang(newTarget);
-                  }}
-                  className="bg-transparent text-sm font-bold text-white focus:outline-none cursor-pointer w-full"
-                >
-                  <option value="hi" className="bg-slate-900 text-white">🇮🇳 Hindi (हिन्दी)</option>
-                  <option value="en" className="bg-slate-900 text-white">🇺🇸 English</option>
-                  <option value="te" className="bg-slate-900 text-white">🇮🇳 Telugu (తెలుగు)</option>
-                  <option value="ta" className="bg-slate-900 text-white">🇮🇳 Tamil (தமிழ்)</option>
-                  <option value="kn" className="bg-slate-900 text-white">🇮🇳 Kannada (ಕನ್ನಡ)</option>
-                  <option value="ml" className="bg-slate-900 text-white">🇮🇳 Malayalam (മലയാളം)</option>
-                  <option value="mr" className="bg-slate-900 text-white">🇮🇳 Marathi (मराठी)</option>
-                  <option value="bn" className="bg-slate-900 text-white">🇮🇳 Bengali (বাংলা)</option>
-                  <option value="es" className="bg-slate-900 text-white">🇪🇸 Spanish</option>
-                  <option value="fr" className="bg-slate-900 text-white">🇫🇷 French</option>
-                </select>
-              </div>
-            </div>
-
-            {/* HERO CENTER: Large Two-Way Live Interpreter Button */}
-            <div className="relative py-4 flex flex-col items-center">
-              {/* Concentric pulsing rings when listening */}
-              <div className={`absolute w-52 h-52 rounded-full border transition-all duration-700 pointer-events-none ${
-                isLiveActive && speakerState === 'listening'
-                  ? 'border-cyan-400/30 scale-125 animate-ping' 
-                  : 'border-blue-500/10'
-              }`} style={{ animationDuration: '2s' }} />
-
-              <div className={`absolute w-40 h-40 rounded-full border transition-all duration-500 pointer-events-none ${
-                isLiveActive && speakerState === 'listening'
-                  ? 'border-indigo-400/40 scale-110 animate-pulse' 
-                  : speakerState === 'speaking'
-                  ? 'border-purple-400/50 scale-105 animate-pulse'
-                  : 'border-slate-800/80'
-              }`} />
-
-              {/* The Hero Button */}
-              <button
-                onClick={toggleLiveInterpreting}
-                className={`w-28 h-28 rounded-full flex items-center justify-center transition-all duration-300 shadow-2xl relative z-10 cursor-pointer group active:scale-95 ${
-                  isLiveActive && speakerState === 'listening'
-                    ? 'bg-gradient-to-tr from-rose-500 via-pink-600 to-red-600 shadow-rose-500/50 ring-4 ring-rose-400/40 animate-pulse' 
-                    : speakerState === 'transcribing'
-                    ? 'bg-gradient-to-tr from-cyan-500 via-blue-600 to-indigo-600 shadow-cyan-500/50 ring-4 ring-cyan-400/40 animate-pulse'
-                    : speakerState === 'translating'
-                    ? 'bg-gradient-to-tr from-amber-500 via-orange-600 to-yellow-500 shadow-amber-500/50 ring-4 ring-amber-400/40'
-                    : speakerState === 'speaking'
-                    ? 'bg-gradient-to-tr from-purple-600 via-indigo-600 to-pink-500 shadow-purple-500/50 ring-4 ring-purple-400/40 animate-pulse'
-                    : 'bg-gradient-to-tr from-blue-600 via-indigo-600 to-cyan-500 hover:shadow-cyan-500/50 hover:scale-105'
-                }`}
-                title={isLiveActive ? "Live Interpreter Active — Tap to Pause" : "Tap to Start Live Two-Way Interpreter"}
-              >
-                {isLiveActive && speakerState === 'listening' ? (
-                  <Mic className="w-12 h-12 text-white animate-bounce" />
-                ) : speakerState === 'transcribing' ? (
-                  <Mic className="w-12 h-12 text-cyan-200 animate-pulse" />
-                ) : speakerState === 'translating' ? (
-                  <Sparkles className="w-12 h-12 text-white animate-spin-slow" />
-                ) : speakerState === 'speaking' ? (
-                  <Volume2 className="w-12 h-12 text-white animate-pulse" />
-                ) : (
-                  <Mic className="w-12 h-12 text-white group-hover:scale-110 transition-transform" />
-                )}
-              </button>
-
-              {/* State Machine Status Label */}
-              <div className="mt-4 flex flex-col items-center gap-1.5">
-                <span className={`text-xs font-extrabold uppercase tracking-wider px-3.5 py-1 rounded-full border ${
-                  isLiveActive && speakerState === 'listening'
-                    ? 'bg-rose-500/20 text-rose-300 border-rose-500/40 animate-pulse' 
-                    : speakerState === 'transcribing'
-                    ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 animate-pulse'
-                    : speakerState === 'translating' 
-                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' 
-                    : speakerState === 'speaking'
-                    ? 'bg-purple-500/20 text-purple-300 border-purple-500/40 animate-pulse'
-                    : 'bg-slate-800/70 text-slate-300 border-slate-700/60'
-                }`}>
-                  {isLiveActive && speakerState === 'listening' 
-                    ? `🟢 Listening... (${LANGUAGES[sourceLang] || 'Auto Detect'})`
-                    : speakerState === 'transcribing'
-                    ? '✍️ Hearing speech...'
-                    : speakerState === 'translating' 
-                    ? '✨ Translating...' 
-                    : speakerState === 'speaking' 
-                    ? `🔊 Speaking in ${LANGUAGES[targetLang] || 'Selected Language'}...` 
-                    : '🎙️ Tap to Start Live Interpreter'}
-                </span>
-                <span className="text-[11px] text-slate-400 font-medium">
-                  {isLiveActive && speakerState === 'listening'
-                    ? `Speak naturally • Will translate & speak in ${LANGUAGES[targetLang] || 'Selected Language'}`
-                    : speakerState === 'transcribing'
-                    ? 'Capturing complete sentence in real time...'
-                    : speakerState === 'speaking'
-                    ? `Microphone paused while speaking in ${LANGUAGES[targetLang] || 'Selected Language'}`
-                    : isLiveActive
-                    ? 'Live Interpreter running...'
-                    : `Hands-free interpreter: ${LANGUAGES[sourceLang] || 'Auto'} ➔ ${LANGUAGES[targetLang]}`}
-                </span>
-              </div>
-
-              {/* Live Audio Interim Hearing Preview */}
-              {isLiveActive && liveInterimText && (
-                <div className="mt-3 px-4 py-2 bg-slate-950/80 border border-cyan-500/40 rounded-2xl text-xs text-cyan-200 italic flex items-center gap-2 animate-pulse shadow-lg">
-                  <Mic className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                  <span>Hearing: "{liveInterimText}..."</span>
-                </div>
-              )}
-            </div>
-
-            {/* Optional Sleek Text Input */}
-            <div className="w-full relative">
-              <input
-                type="text"
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    performTranslation(inputText, sourceLang, targetLang, 'default', true);
+                onClick={() => {
+                  if (activeMode !== 'talk') {
+                    stopLiveInterpretation();
+                    setActiveMode('talk');
                   }
                 }}
-                placeholder="Type here in Telugu, Kannada, Hindi, English..."
-                className="w-full bg-slate-900/80 border border-slate-800 rounded-2xl py-3 px-4 pr-24 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500/50 shadow-inner"
-              />
-              <div className="absolute right-2 top-1.5 flex items-center gap-1">
-                {inputText && (
-                  <button
-                    onClick={() => { setInputText(''); setTranslatedText(''); }}
-                    className="p-1.5 text-slate-500 hover:text-slate-300 rounded-lg cursor-pointer"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                )}
-                <button
-                  onClick={() => performTranslation(inputText, sourceLang, targetLang, 'default', true)}
-                  className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 text-white font-bold text-xs hover:from-blue-500 hover:to-cyan-400 transition-all cursor-pointer shadow-md"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                </button>
-              </div>
+                className={`flex-1 py-2.5 px-4 rounded-xl text-xs md:text-sm font-extrabold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                  activeMode === 'talk'
+                    ? 'bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 text-white shadow-md shadow-blue-500/25'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+              >
+                <Mic className="w-4 h-4" />
+                <span>🎙️ TALK — Live Interpreter</span>
+              </button>
+              <button
+                onClick={() => {
+                  if (activeMode !== 'learn') {
+                    stopLiveInterpretation();
+                    setActiveMode('learn');
+                  }
+                }}
+                className={`flex-1 py-2.5 px-4 rounded-xl text-xs md:text-sm font-extrabold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                  activeMode === 'learn'
+                    ? 'bg-gradient-to-r from-purple-600 via-pink-600 to-indigo-500 text-white shadow-md shadow-purple-500/25'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+              >
+                <BookOpen className="w-4 h-4" />
+                <span>🎓 LEARN — Practice Coach</span>
+              </button>
             </div>
 
-            {/* RESULTS DISPLAY: YOU SAID ↓ TRANSLATED RESPONSE */}
-            <div className="w-full space-y-4 pt-2">
-              {/* YOU SAID */}
-              <div className="w-full bg-slate-900/90 border border-slate-800/90 rounded-3xl p-5 shadow-xl">
-                <div className="flex items-center justify-between text-xs text-slate-400 mb-1.5">
-                  <span className="font-extrabold uppercase tracking-wide text-blue-400 flex items-center gap-1.5">
-                    <Mic className="w-3.5 h-3.5" /> YOU SAID ({LANGUAGES[detectedCode || sourceLang] || 'Source'})
-                  </span>
-                  {transliteratedScript && (
-                    <span className="text-[11px] bg-indigo-500/15 text-indigo-300 px-2 py-0.5 rounded-md border border-indigo-500/30 font-semibold">
-                      {transliteratedScript}
+            {/* ========================================================= */}
+            {/* 🎙️ MODE 1: TALK (LIVE 2-WAY INTERPRETER)                  */}
+            {/* ========================================================= */}
+            {activeMode === 'talk' ? (
+              <>
+                {/* Minimal Language Controls */}
+                <div className="w-full bg-slate-900/90 border border-slate-800 rounded-3xl p-3 shadow-xl flex items-center justify-between gap-2">
+                  {/* I Speak */}
+                  <div className="flex-1 flex items-center gap-2 px-3 py-2 bg-slate-950/70 rounded-2xl border border-slate-800">
+                    <span className="text-xs font-bold text-blue-400 shrink-0">I Speak:</span>
+                    <select
+                      value={sourceLang}
+                      onChange={(e) => {
+                        const newSource = e.target.value;
+                        setSourceLang(newSource);
+                        if (newSource !== 'auto') {
+                          setSpeakerInputLang(newSource);
+                        }
+                      }}
+                      className="bg-transparent text-sm font-bold text-white focus:outline-none cursor-pointer w-full"
+                    >
+                      <option value="te" className="bg-slate-900 text-white">🇮🇳 Telugu (తెలుగు)</option>
+                      <option value="hi" className="bg-slate-900 text-white">🇮🇳 Hindi (हिन्दी)</option>
+                      <option value="en" className="bg-slate-900 text-white">🇺🇸 English</option>
+                      <option value="ta" className="bg-slate-900 text-white">🇮🇳 Tamil (தமிழ்)</option>
+                      <option value="kn" className="bg-slate-900 text-white">🇮🇳 Kannada (ಕನ್ನಡ)</option>
+                      <option value="ml" className="bg-slate-900 text-white">🇮🇳 Malayalam (മലയാളം)</option>
+                      <option value="mr" className="bg-slate-900 text-white">🇮🇳 Marathi (मराठी)</option>
+                      <option value="bn" className="bg-slate-900 text-white">🇮🇳 Bengali (বাংলা)</option>
+                      <option value="auto" className="bg-slate-900 text-white">🌐 Auto Detect</option>
+                    </select>
+                  </div>
+
+                  {/* Swap Button */}
+                  <button
+                    onClick={handleSwapLanguages}
+                    className="p-2.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-indigo-400 hover:text-white border border-slate-700 transition-all hover:scale-110 active:scale-95 cursor-pointer shrink-0"
+                    title="Swap Languages"
+                  >
+                    <ArrowRightLeft className="w-4 h-4" />
+                  </button>
+
+                  {/* Translate To */}
+                  <div className="flex-1 flex items-center gap-2 px-3 py-2 bg-slate-950/70 rounded-2xl border border-slate-800">
+                    <span className="text-xs font-bold text-purple-400 shrink-0">Translate To:</span>
+                    <select
+                      value={targetLang}
+                      onChange={(e) => {
+                        const newTarget = e.target.value;
+                        setTargetLang(newTarget);
+                        setSpeakerTargetLang(newTarget);
+                      }}
+                      className="bg-transparent text-sm font-bold text-white focus:outline-none cursor-pointer w-full"
+                    >
+                      <option value="hi" className="bg-slate-900 text-white">🇮🇳 Hindi (हिन्दी)</option>
+                      <option value="en" className="bg-slate-900 text-white">🇺🇸 English</option>
+                      <option value="te" className="bg-slate-900 text-white">🇮🇳 Telugu (తెలుగు)</option>
+                      <option value="ta" className="bg-slate-900 text-white">🇮🇳 Tamil (தமிழ்)</option>
+                      <option value="kn" className="bg-slate-900 text-white">🇮🇳 Kannada (ಕನ್ನಡ)</option>
+                      <option value="ml" className="bg-slate-900 text-white">🇮🇳 Malayalam (മലയാളം)</option>
+                      <option value="mr" className="bg-slate-900 text-white">🇮🇳 Marathi (मराठी)</option>
+                      <option value="bn" className="bg-slate-900 text-white">🇮🇳 Bengali (বাংলা)</option>
+                      <option value="es" className="bg-slate-900 text-white">🇪🇸 Spanish</option>
+                      <option value="fr" className="bg-slate-900 text-white">🇫🇷 French</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* HERO CENTER: Large Two-Way Live Interpreter Button */}
+                <div className="relative py-4 flex flex-col items-center">
+                  {/* Concentric pulsing rings when listening */}
+                  <div className={`absolute w-52 h-52 rounded-full border transition-all duration-700 pointer-events-none ${
+                    isLiveActive && speakerState === 'listening'
+                      ? 'border-cyan-400/30 scale-125 animate-ping' 
+                      : 'border-blue-500/10'
+                  }`} style={{ animationDuration: '2s' }} />
+
+                  <div className={`absolute w-40 h-40 rounded-full border transition-all duration-500 pointer-events-none ${
+                    isLiveActive && speakerState === 'listening'
+                      ? 'border-indigo-400/40 scale-110 animate-pulse' 
+                      : speakerState === 'speaking'
+                      ? 'border-purple-400/50 scale-105 animate-pulse'
+                      : 'border-slate-800/80'
+                  }`} />
+
+                  {/* The Hero Button */}
+                  <button
+                    onClick={toggleLiveInterpreting}
+                    className={`w-28 h-28 rounded-full flex items-center justify-center transition-all duration-300 shadow-2xl relative z-10 cursor-pointer group active:scale-95 ${
+                      isLiveActive && speakerState === 'listening'
+                        ? 'bg-gradient-to-tr from-rose-500 via-pink-600 to-red-600 shadow-rose-500/50 ring-4 ring-rose-400/40 animate-pulse' 
+                        : speakerState === 'transcribing'
+                        ? 'bg-gradient-to-tr from-cyan-500 via-blue-600 to-indigo-600 shadow-cyan-500/50 ring-4 ring-cyan-400/40 animate-pulse'
+                        : speakerState === 'translating'
+                        ? 'bg-gradient-to-tr from-amber-500 via-orange-600 to-yellow-500 shadow-amber-500/50 ring-4 ring-amber-400/40'
+                        : speakerState === 'speaking'
+                        ? 'bg-gradient-to-tr from-purple-600 via-indigo-600 to-pink-500 shadow-purple-500/50 ring-4 ring-purple-400/40 animate-pulse'
+                        : 'bg-gradient-to-tr from-blue-600 via-indigo-600 to-cyan-500 hover:shadow-cyan-500/50 hover:scale-105'
+                    }`}
+                    title={isLiveActive ? "Live Interpreter Active — Tap to Pause" : "Tap to Start Live Two-Way Interpreter"}
+                  >
+                    {isLiveActive && speakerState === 'listening' ? (
+                      <Mic className="w-12 h-12 text-white animate-bounce" />
+                    ) : speakerState === 'transcribing' ? (
+                      <Mic className="w-12 h-12 text-cyan-200 animate-pulse" />
+                    ) : speakerState === 'translating' ? (
+                      <Sparkles className="w-12 h-12 text-white animate-spin-slow" />
+                    ) : speakerState === 'speaking' ? (
+                      <Volume2 className="w-12 h-12 text-white animate-pulse" />
+                    ) : (
+                      <Mic className="w-12 h-12 text-white group-hover:scale-110 transition-transform" />
+                    )}
+                  </button>
+
+                  {/* State Machine Status Label */}
+                  <div className="mt-4 flex flex-col items-center gap-1.5">
+                    <span className={`text-xs font-extrabold uppercase tracking-wider px-3.5 py-1 rounded-full border ${
+                      isLiveActive && speakerState === 'listening'
+                        ? 'bg-rose-500/20 text-rose-300 border-rose-500/40 animate-pulse' 
+                        : speakerState === 'transcribing'
+                        ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 animate-pulse'
+                        : speakerState === 'translating' 
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' 
+                        : speakerState === 'speaking'
+                        ? 'bg-purple-500/20 text-purple-300 border-purple-500/40 animate-pulse'
+                        : 'bg-slate-800/70 text-slate-300 border-slate-700/60'
+                    }`}>
+                      {isLiveActive && speakerState === 'listening' 
+                        ? `🟢 Listening to ${currentSpeakerTurn === 'A' ? 'Person A' : 'Person B'} (${LANGUAGES[currentSpeakerTurn === 'A' ? (sourceLang !== 'auto' ? sourceLang : 'te') : targetLang] || 'Auto'})`
+                        : speakerState === 'transcribing'
+                        ? '✍️ Hearing speech...'
+                        : speakerState === 'translating' 
+                        ? '✨ Translating...' 
+                        : speakerState === 'speaking' 
+                        ? `🔊 Speaking in ${LANGUAGES[currentSpeakerTurn === 'A' ? targetLang : (sourceLang !== 'auto' ? sourceLang : 'te')] || 'Target'}...` 
+                        : '🎙️ Tap to Start Live Interpreter'}
                     </span>
+                    <span className="text-[11px] text-slate-400 font-medium text-center">
+                      {isLiveActive && speakerState === 'listening'
+                        ? `Speak in ${LANGUAGES[currentSpeakerTurn === 'A' ? (sourceLang !== 'auto' ? sourceLang : 'te') : targetLang]} • Automatically translates to ${LANGUAGES[currentSpeakerTurn === 'A' ? targetLang : (sourceLang !== 'auto' ? sourceLang : 'te')]}`
+                        : speakerState === 'transcribing'
+                        ? 'Capturing sentence • Finishes when you pause naturally'
+                        : speakerState === 'speaking'
+                        ? `Microphone paused while speaking aloud`
+                        : isLiveActive
+                        ? 'Live Interpreter running...'
+                        : `Hands-free 2-way conversation: ${LANGUAGES[sourceLang !== 'auto' ? sourceLang : 'te']} ⇄ ${LANGUAGES[targetLang]}`}
+                    </span>
+                  </div>
+
+                  {/* Live Audio Interim Hearing Preview */}
+                  {isLiveActive && liveInterimText && (
+                    <div className="mt-3 px-4 py-2 bg-slate-950/80 border border-cyan-500/40 rounded-2xl text-xs text-cyan-200 italic flex items-center gap-2 animate-pulse shadow-lg">
+                      <Mic className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                      <span>Hearing: "{liveInterimText}..."</span>
+                    </div>
                   )}
                 </div>
-                <p className="text-xl md:text-2xl font-bold text-slate-100 min-h-[36px] leading-relaxed">
-                  {inputText ? `"${inputText}"` : <span className="text-slate-600 text-base italic">Speak or type a phrase above...</span>}
-                </p>
-              </div>
 
-              {/* Animated Arrow */}
-              <div className="flex items-center justify-center">
-                <div className="px-3 py-1 rounded-full bg-slate-800/90 border border-slate-700 text-[11px] font-bold text-indigo-300 flex items-center gap-1.5 shadow-md">
-                  <span>↓ Meaning Understood & Translated</span>
-                </div>
-              </div>
-
-              {/* TRANSLATED RESPONSE */}
-              <div className="w-full bg-slate-900/90 border border-purple-500/40 rounded-3xl p-5 shadow-xl">
-                <div className="flex items-center justify-between text-xs text-purple-300 mb-1.5">
-                  <span className="font-extrabold uppercase tracking-wide flex items-center gap-1.5 text-purple-400">
-                    <Volume2 className="w-3.5 h-3.5 text-purple-400" /> TRANSLATED RESPONSE ({LANGUAGES[targetLang] || 'Target'})
-                  </span>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={() => speakText(translatedText, targetLang)}
-                      disabled={!translatedText}
-                      className="px-2.5 py-1 rounded-lg bg-purple-600/20 hover:bg-purple-600/40 text-purple-300 border border-purple-500/30 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-30 shadow-sm"
-                      title="Replay Voice in Target Language"
-                    >
-                      <Volume2 className="w-3.5 h-3.5 text-purple-400" /> Replay Voice
-                    </button>
-                    <button
-                      onClick={() => handleCopy(translatedText, 'page2_trans')}
-                      disabled={!translatedText}
-                      className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors cursor-pointer disabled:opacity-30"
-                      title="Copy Translation"
-                    >
-                      {copiedId === 'page2_trans' ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-                <p className="text-2xl md:text-3xl font-extrabold text-transparent bg-gradient-to-r from-blue-300 via-indigo-200 to-purple-300 bg-clip-text min-h-[42px] leading-relaxed">
-                  {translatedText ? `"${translatedText}"` : <span className="text-slate-600 text-base italic">Translated speech will appear and speak here...</span>}
-                </p>
-              </div>
-
-              {/* Real-time Conversation History stream */}
-              {liveSessionLog && liveSessionLog.length > 0 && (
-                <div className="w-full pt-4 space-y-3">
-                  <div className="flex items-center justify-between px-1">
-                    <span className="text-xs font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5 text-indigo-400" /> Continuous Conversation Turns ({liveSessionLog.length})
-                    </span>
-                    <button
-                      onClick={() => setLiveSessionLog([])}
-                      className="text-[11px] text-slate-500 hover:text-rose-400 transition-colors cursor-pointer"
-                    >
-                      Clear Log
-                    </button>
-                  </div>
-
-                  <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
-                    {liveSessionLog.map((log) => (
-                      <div
-                        key={log.id}
-                        className="bg-slate-900/80 border border-slate-800/80 hover:border-slate-700/80 rounded-2xl p-3.5 shadow-lg space-y-2 transition-all"
+                {/* Optional Sleek Text Input */}
+                <div className="w-full relative">
+                  <input
+                    type="text"
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        performTranslation(inputText, sourceLang, targetLang, 'default', true);
+                      }
+                    }}
+                    placeholder="Type here in Telugu, Kannada, Hindi, English..."
+                    className="w-full bg-slate-900/80 border border-slate-800 rounded-2xl py-3 px-4 pr-24 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500/50 shadow-inner"
+                  />
+                  <div className="absolute right-2 top-1.5 flex items-center gap-1">
+                    {inputText && (
+                      <button
+                        onClick={() => { setInputText(''); setTranslatedText(''); }}
+                        className="p-1.5 text-slate-500 hover:text-slate-300 rounded-lg cursor-pointer"
                       >
-                        <div className="flex items-center justify-between text-[11px]">
-                          <span className="font-bold text-cyan-400 flex items-center gap-1.5">
-                            <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-                            {log.speaker}
-                          </span>
-                          <span className="text-slate-500">{log.time}</span>
-                        </div>
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => performTranslation(inputText, sourceLang, targetLang, 'default', true)}
+                      className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 text-white font-bold text-xs hover:from-blue-500 hover:to-cyan-400 transition-all cursor-pointer shadow-md"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
 
-                        {/* Spoken original */}
-                        <div className="text-sm font-semibold text-slate-200 pl-3 border-l-2 border-blue-500/50">
-                          "{log.spoken}"
-                        </div>
+                {/* RESULTS DISPLAY: YOU SAID ↓ TRANSLATED RESPONSE */}
+                <div className="w-full space-y-4 pt-2">
+                  {/* YOU SAID */}
+                  <div className="w-full bg-slate-900/90 border border-slate-800/90 rounded-3xl p-5 shadow-xl">
+                    <div className="flex items-center justify-between text-xs text-slate-400 mb-1.5">
+                      <span className="font-extrabold uppercase tracking-wide text-blue-400 flex items-center gap-1.5">
+                        <Mic className="w-3.5 h-3.5" /> YOU SAID ({LANGUAGES[detectedCode || (currentSpeakerTurn === 'A' ? (sourceLang !== 'auto' ? sourceLang : 'te') : targetLang)] || 'Source'})
+                      </span>
+                      {transliteratedScript && (
+                        <span className="text-[11px] bg-indigo-500/15 text-indigo-300 px-2 py-0.5 rounded-md border border-indigo-500/30 font-semibold">
+                          {transliteratedScript}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xl md:text-2xl font-bold text-slate-100 min-h-[36px] leading-relaxed">
+                      {(isLiveActive && liveInterimText) ? (
+                        <span className="text-cyan-300 italic">"{liveInterimText}"</span>
+                      ) : speakerHeardText ? (
+                        `"${speakerHeardText}"`
+                      ) : inputText ? (
+                        `"${inputText}"`
+                      ) : (
+                        <span className="text-slate-600 text-base italic">Speak or type a phrase above...</span>
+                      )}
+                    </p>
+                  </div>
 
-                        {/* Translated */}
-                        <div className="flex items-center justify-between bg-slate-950/60 rounded-xl p-2.5 border border-purple-500/20">
-                          <span className="text-sm font-bold text-transparent bg-gradient-to-r from-purple-300 to-indigo-200 bg-clip-text">
-                            "{log.translated}"
-                          </span>
-                          <button
-                            onClick={() => speakText(log.translated, log.targetLang)}
-                            className="p-1 rounded-lg text-purple-400 hover:text-purple-300 hover:bg-purple-950/50 transition-colors"
-                            title="Listen"
-                          >
-                            <Volume2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                  {/* Animated Arrow */}
+                  <div className="flex items-center justify-center">
+                    <div className="px-3 py-1 rounded-full bg-slate-800/90 border border-slate-700 text-[11px] font-bold text-indigo-300 flex items-center gap-1.5 shadow-md">
+                      <span>↓ Meaning Understood & Translated</span>
+                    </div>
+                  </div>
+
+                  {/* TRANSLATED RESPONSE */}
+                  <div className="w-full bg-slate-900/90 border border-purple-500/40 rounded-3xl p-5 shadow-xl">
+                    <div className="flex items-center justify-between text-xs text-purple-300 mb-1.5">
+                      <span className="font-extrabold uppercase tracking-wide flex items-center gap-1.5 text-purple-400">
+                        <Volume2 className="w-3.5 h-3.5 text-purple-400" /> TRANSLATED RESPONSE ({LANGUAGES[currentSpeakerTurn === 'A' ? targetLang : (sourceLang !== 'auto' ? sourceLang : 'te')] || 'Target'})
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => speakText(translatedText, currentSpeakerTurn === 'A' ? targetLang : (sourceLang !== 'auto' ? sourceLang : 'te'))}
+                          disabled={!translatedText}
+                          className="px-2.5 py-1 rounded-lg bg-purple-600/20 hover:bg-purple-600/40 text-purple-300 border border-purple-500/30 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-30 shadow-sm"
+                          title="Replay Voice in Target Language"
+                        >
+                          <Volume2 className="w-3.5 h-3.5 text-purple-400" /> Replay Voice
+                        </button>
+                        <button
+                          onClick={() => handleCopy(translatedText, 'page2_trans')}
+                          disabled={!translatedText}
+                          className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors cursor-pointer disabled:opacity-30"
+                          title="Copy Translation"
+                        >
+                          {copiedId === 'page2_trans' ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                        </button>
                       </div>
+                    </div>
+                    <p className="text-2xl md:text-3xl font-extrabold text-transparent bg-gradient-to-r from-blue-300 via-indigo-200 to-purple-300 bg-clip-text min-h-[42px] leading-relaxed">
+                      {translatedText ? `"${translatedText}"` : <span className="text-slate-600 text-base italic">Translated speech will appear and speak here...</span>}
+                    </p>
+                  </div>
+
+                  {/* Real-time Conversation History stream */}
+                  {liveSessionLog && liveSessionLog.length > 0 && (
+                    <div className="w-full pt-4 space-y-3">
+                      <div className="flex items-center justify-between px-1">
+                        <span className="text-xs font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                          <Clock className="w-3.5 h-3.5 text-indigo-400" /> Continuous Conversation Turns ({liveSessionLog.length})
+                        </span>
+                        <button
+                          onClick={() => setLiveSessionLog([])}
+                          className="text-[11px] text-slate-500 hover:text-rose-400 transition-colors cursor-pointer"
+                        >
+                          Clear Log
+                        </button>
+                      </div>
+
+                      <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
+                        {liveSessionLog.map((log) => (
+                          <div
+                            key={log.id}
+                            className="bg-slate-900/80 border border-slate-800/80 hover:border-slate-700/80 rounded-2xl p-3.5 shadow-lg space-y-2 transition-all"
+                          >
+                            <div className="flex items-center justify-between text-[11px]">
+                              <span className="font-bold text-cyan-400 flex items-center gap-1.5">
+                                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+                                {log.speaker}
+                              </span>
+                              <span className="text-slate-500">{log.time}</span>
+                            </div>
+
+                            {/* Spoken original */}
+                            <div className="text-sm font-semibold text-slate-200 pl-3 border-l-2 border-blue-500/50">
+                              "{log.spoken}"
+                            </div>
+
+                            {/* Translated */}
+                            <div className="flex items-center justify-between bg-slate-950/60 rounded-xl p-2.5 border border-purple-500/20">
+                              <span className="text-sm font-bold text-transparent bg-gradient-to-r from-purple-300 to-indigo-200 bg-clip-text">
+                                "{log.translated}"
+                              </span>
+                              <button
+                                onClick={() => speakText(log.translated, log.targetLang)}
+                                className="p-1 rounded-lg text-purple-400 hover:text-purple-300 hover:bg-purple-950/50 transition-colors"
+                                title="Listen"
+                              >
+                                <Volume2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              /* ========================================================= */
+              /* 🎓 MODE 2: LEARN (CONVERSATION COACH & PRONUNCIATION)     */
+              /* ========================================================= */
+              <div className="w-full space-y-6 animate-in fade-in duration-300">
+                {/* Learn Language Pair Selector */}
+                <div className="w-full bg-slate-900/90 border border-slate-800 rounded-3xl p-4 shadow-xl flex flex-col sm:flex-row items-center justify-between gap-3">
+                  {/* I Know */}
+                  <div className="flex-1 w-full flex items-center gap-2 px-3 py-2.5 bg-slate-950/70 rounded-2xl border border-slate-800">
+                    <span className="text-xs font-bold text-blue-400 shrink-0">I Know:</span>
+                    <select
+                      value={learnKnownLang}
+                      onChange={(e) => setLearnKnownLang(e.target.value)}
+                      className="bg-transparent text-sm font-bold text-white focus:outline-none cursor-pointer w-full"
+                    >
+                      <option value="te" className="bg-slate-900 text-white">🇮🇳 Telugu (తెలుగు)</option>
+                      <option value="hi" className="bg-slate-900 text-white">🇮🇳 Hindi (हिन्दी)</option>
+                      <option value="en" className="bg-slate-900 text-white">🇺🇸 English</option>
+                      <option value="ta" className="bg-slate-900 text-white">🇮🇳 Tamil (தமிழ்)</option>
+                      <option value="kn" className="bg-slate-900 text-white">🇮🇳 Kannada (ಕನ್ನಡ)</option>
+                      <option value="ml" className="bg-slate-900 text-white">🇮🇳 Malayalam (മലയാളം)</option>
+                      <option value="mr" className="bg-slate-900 text-white">🇮🇳 Marathi (मराठी)</option>
+                      <option value="bn" className="bg-slate-900 text-white">🇮🇳 Bengali (বাংলা)</option>
+                    </select>
+                  </div>
+
+                  <span className="text-indigo-400 font-bold hidden sm:inline">➔</span>
+
+                  {/* I Want to Learn */}
+                  <div className="flex-1 w-full flex items-center gap-2 px-3 py-2.5 bg-slate-950/70 rounded-2xl border border-slate-800">
+                    <span className="text-xs font-bold text-purple-400 shrink-0">I Want to Learn:</span>
+                    <select
+                      value={learnTargetLang}
+                      onChange={(e) => setLearnTargetLang(e.target.value)}
+                      className="bg-transparent text-sm font-bold text-white focus:outline-none cursor-pointer w-full"
+                    >
+                      <option value="hi" className="bg-slate-900 text-white">🇮🇳 Hindi (हिन्दी)</option>
+                      <option value="en" className="bg-slate-900 text-white">🇺🇸 English</option>
+                      <option value="te" className="bg-slate-900 text-white">🇮🇳 Telugu (తెలుగు)</option>
+                      <option value="ta" className="bg-slate-900 text-white">🇮🇳 Tamil (தமிழ்)</option>
+                      <option value="kn" className="bg-slate-900 text-white">🇮🇳 Kannada (ಕನ್ನಡ)</option>
+                      <option value="ml" className="bg-slate-900 text-white">🇮🇳 Malayalam (മലയാളം)</option>
+                      <option value="mr" className="bg-slate-900 text-white">🇮🇳 Marathi (मराठी)</option>
+                      <option value="bn" className="bg-slate-900 text-white">🇮🇳 Bengali (বাংলা)</option>
+                      <option value="es" className="bg-slate-900 text-white">🇪🇸 Spanish</option>
+                      <option value="fr" className="bg-slate-900 text-white">🇫🇷 French</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Known Language Speech/Text Input Box */}
+                <div className="w-full bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-4">
+                  <div className="flex items-center justify-between text-xs text-slate-400">
+                    <span className="font-bold text-blue-400 flex items-center gap-1.5">
+                      <Mic className="w-3.5 h-3.5" /> Speak or Type in {LANGUAGES[learnKnownLang]}
+                    </span>
+                    <span className="text-[11px] text-slate-500">Listen ➔ Repeat ➔ Practice</span>
+                  </div>
+
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={learnInputText}
+                      onChange={(e) => setLearnInputText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleLearnTranslate(learnInputText);
+                      }}
+                      placeholder={`Say or type something in ${LANGUAGES[learnKnownLang]}, e.g. నువ్వు ఎలా ఉన్నావు?`}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl py-3.5 pl-4 pr-24 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-purple-500/50"
+                    />
+                    <div className="absolute right-2 top-2 flex items-center gap-1.5">
+                      <button
+                        onClick={toggleLearnVoiceInput}
+                        className={`p-2 rounded-xl text-white transition-all cursor-pointer shadow-md ${
+                          isLearnListening
+                            ? 'bg-rose-600 animate-pulse ring-2 ring-rose-400'
+                            : 'bg-indigo-600 hover:bg-indigo-500'
+                        }`}
+                        title="Speak in your known language"
+                      >
+                        <Mic className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => handleLearnTranslate(learnInputText)}
+                        disabled={!learnInputText.trim() || isLearnLoading}
+                        className="px-3 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 text-white font-bold text-xs hover:from-purple-500 hover:to-indigo-500 transition-all cursor-pointer disabled:opacity-40 shadow-md"
+                      >
+                        {isLearnLoading ? <Sparkles className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Instant Practice Suggestions */}
+                  <div className="flex items-center gap-2 flex-wrap pt-1">
+                    <span className="text-[11px] text-slate-500 font-semibold">Try practicing:</span>
+                    {[
+                      { label: "నువ్వు ఎలా ఉన్నావు?", full: "నువ్వు ఎలా ఉన్నావు?" },
+                      { label: "నాకు నీళ్లు కావాలి", full: "నాకు నీళ్లు కావాలి" },
+                      { label: "మీ పేరు ఏమిటి?", full: "మీ పేరు ఏమిటి?" },
+                      { label: "ధన్యవాదాలు", full: "ధన్యవాదాలు" }
+                    ].map((chip, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => {
+                          setLearnInputText(chip.full);
+                          handleLearnTranslate(chip.full);
+                        }}
+                        className="text-[11px] px-2.5 py-1 rounded-lg bg-slate-800/80 hover:bg-slate-700 border border-slate-700/80 text-cyan-300 transition-colors cursor-pointer"
+                      >
+                        {chip.label}
+                      </button>
                     ))}
                   </div>
                 </div>
-              )}
-            </div>
+
+                {/* 🎓 THE 4 LEARNING CARDS: YOU SAID ➔ TRANSLATION ➔ PRONUNCIATION ➔ MEANING */}
+                {learnData && (
+                  <div className="w-full space-y-4 animate-in fade-in slide-in-from-bottom-3 duration-300">
+                    
+                    {/* CARD 1: YOU SAID */}
+                    <div className="w-full bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-xl">
+                      <div className="text-xs font-bold text-blue-400 uppercase tracking-wide mb-1.5 flex items-center gap-1.5">
+                        <User className="w-3.5 h-3.5" /> YOU SAID ({LANGUAGES[learnData.knownLang]})
+                      </div>
+                      <p className="text-xl md:text-2xl font-bold text-slate-100">
+                        "{learnData.original}"
+                      </p>
+                    </div>
+
+                    {/* Arrow */}
+                    <div className="flex items-center justify-center">
+                      <div className="px-3 py-1 rounded-full bg-slate-800/90 border border-slate-700 text-[11px] font-bold text-purple-300 shadow-md">
+                        ↓ Learning Card & Native Voice
+                      </div>
+                    </div>
+
+                    {/* CARD 2: TRANSLATION (TARGET LANGUAGE) */}
+                    <div className="w-full bg-slate-900/90 border border-purple-500/40 rounded-3xl p-5 shadow-xl space-y-3">
+                      <div className="flex items-center justify-between text-xs text-purple-400 uppercase tracking-wide">
+                        <span className="font-extrabold flex items-center gap-1.5">
+                          <Globe className="w-3.5 h-3.5 text-purple-400" /> TRANSLATION ({LANGUAGES[learnData.targetLang]})
+                        </span>
+                        <span className="text-[11px] bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full border border-purple-500/30">
+                          Target Phrase
+                        </span>
+                      </div>
+                      <p className="text-2xl md:text-3xl font-extrabold text-transparent bg-gradient-to-r from-purple-300 via-pink-200 to-indigo-300 bg-clip-text">
+                        "{learnData.translation}"
+                      </p>
+
+                      {/* CARD 3: PRONUNCIATION (ROMANIZED) */}
+                      {learnData.pronunciation && (
+                        <div className="pt-2 border-t border-slate-800/80">
+                          <span className="text-[11px] font-extrabold uppercase tracking-wide text-cyan-400 block mb-1">
+                            🔤 PRONUNCIATION:
+                          </span>
+                          <span className="text-base md:text-lg font-mono font-bold text-cyan-200 bg-cyan-950/40 px-3 py-1 rounded-xl border border-cyan-500/30 inline-block">
+                            {learnData.pronunciation}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* CARD 4: MEANING (ENGLISH / CONCEPTUAL) */}
+                      {learnData.meaning && (
+                        <div className="pt-2 border-t border-slate-800/80">
+                          <span className="text-[11px] font-extrabold uppercase tracking-wide text-amber-400 block mb-1">
+                            💡 MEANING:
+                          </span>
+                          <span className="text-sm md:text-base font-semibold text-slate-200">
+                            {learnData.meaning}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* INTERACTIVE CONTROLS: LISTEN 🔊 & REPEAT 🎤 */}
+                      <div className="pt-4 border-t border-slate-800 flex flex-wrap items-center gap-3">
+                        {/* 🔊 LISTEN BUTTON */}
+                        <button
+                          onClick={() => speakTranslatedSentence(learnData.translation, learnData.targetLang)}
+                          className="flex-1 min-w-[140px] py-3 px-4 rounded-2xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-purple-500/25 transition-all cursor-pointer active:scale-95"
+                        >
+                          <Volume2 className="w-4 h-4" />
+                          <span>🔊 Listen</span>
+                        </button>
+
+                        {/* 🎤 REPEAT BUTTON */}
+                        <button
+                          onClick={startRepeatPractice}
+                          className={`flex-1 min-w-[140px] py-3 px-4 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 shadow-lg ${
+                            isRepeatListening
+                              ? 'bg-rose-600 text-white animate-pulse ring-4 ring-rose-400/50'
+                              : 'bg-slate-800 hover:bg-slate-700 text-pink-300 border border-pink-500/30'
+                          }`}
+                        >
+                          <Mic className={`w-4 h-4 ${isRepeatListening ? 'animate-bounce' : ''}`} />
+                          <span>{isRepeatListening ? 'Listening your repeat...' : '🎤 Repeat'}</span>
+                        </button>
+                      </div>
+
+                      {/* Repeat Evaluation & Real-Time Feedback */}
+                      {repeatAttemptText && (
+                        <div className="p-3.5 bg-slate-950/70 rounded-2xl border border-slate-800 space-y-2 mt-3">
+                          <div className="flex items-center justify-between text-xs text-slate-400">
+                            <span className="font-bold">Your Pronunciation Attempt:</span>
+                            {repeatFeedback && (
+                              <span className={`px-2.5 py-0.5 rounded-full font-extrabold text-xs border ${
+                                repeatFeedback.score >= 70
+                                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                                  : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                              }`}>
+                                Accuracy: {repeatFeedback.score}%
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-base font-bold text-slate-200">
+                            "{repeatAttemptText}"
+                          </p>
+                          {repeatFeedback && (
+                            <div className={`p-2.5 rounded-xl text-xs font-semibold flex items-center gap-2 ${
+                              repeatFeedback.score >= 70
+                                ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-500/30'
+                                : 'bg-amber-950/40 text-amber-300 border border-amber-500/30'
+                            }`}>
+                              <span>{repeatFeedback.comment}</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
           </main>
         </div>

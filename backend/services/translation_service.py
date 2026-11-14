@@ -329,28 +329,54 @@ TELUGU_PHONETIC_CORRECTIONS = {
 }
 
 def query_gtx(text: str, sl: str = 'auto', tl: str = 'en') -> Tuple[str, str]:
-    """Execute direct low-latency neural translation query."""
+    """Execute direct low-latency neural translation query with multi-client failover."""
     normalized_input = text.strip()
     for err, fix in TELUGU_PHONETIC_CORRECTIONS.items():
         if err in normalized_input:
             normalized_input = normalized_input.replace(err, fix)
 
     encoded_text = urllib.parse.quote(normalized_input)
-    url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={sl}&tl={tl}&dt=t&q={encoded_text}"
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    )
-    with urllib.request.urlopen(req, timeout=5) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-        translated_segments = []
-        if payload and len(payload) > 0 and payload[0]:
-            for item in payload[0]:
-                if item and item[0]:
-                    translated_segments.append(item[0])
-        translated_text = "".join(translated_segments)
-        detected_code = payload[2] if len(payload) > 2 and payload[2] else sl
-        return translated_text, detected_code
+    clients = ['dict-chrome-ex', 'gtx', 'webapp']
+    last_err = None
+
+    for client in clients:
+        try:
+            url = f"https://translate.googleapis.com/translate_a/single?client={client}&sl={sl}&tl={tl}&dt=t&q={encoded_text}"
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                translated_segments = []
+                if payload and len(payload) > 0 and payload[0]:
+                    for item in payload[0]:
+                        if item and item[0]:
+                            translated_segments.append(item[0])
+                translated_text = "".join(translated_segments)
+                detected_code = payload[2] if len(payload) > 2 and payload[2] else sl
+                if translated_text and translated_text.strip():
+                    return translated_text.strip(), detected_code
+        except Exception as e:
+            last_err = e
+            continue
+
+    # Fallback to MyMemory if Google clients fail
+    try:
+        eff_sl = 'te' if sl == 'auto' else sl
+        mm_url = f"https://api.mymemory.translated.net/get?q={encoded}&langpair={eff_sl}|{tl}"
+        req = urllib.request.Request(mm_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            tr = data.get("responseData", {}).get("translatedText")
+            if tr and tr.strip() and tr.strip().lower() != text.lower() and "quota exceeded" not in tr.lower():
+                return tr.strip(), eff_sl
+    except Exception:
+        pass
+
+    if last_err:
+        raise last_err
+    return text, sl
 
 def transliterate_romanized(text: str, target_lang: str = 'te') -> Optional[str]:
     """Transliterate Romanized letters to native Indic script using Google Input Tools."""
