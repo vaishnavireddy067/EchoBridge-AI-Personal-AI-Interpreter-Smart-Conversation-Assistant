@@ -973,6 +973,36 @@ def score_stt_language_candidate(lang_code: str, text: str) -> float:
 
     return 5.0
 
+def convert_to_wav_16k(audio_bytes: bytes) -> bytes:
+    """Converts any browser audio (WebM, OGG, WAV, etc.) to 16kHz mono 16-bit WAV."""
+    if not audio_bytes:
+        return audio_bytes
+    # If already a valid 16kHz mono WAV, return directly
+    if audio_bytes.startswith(b"RIFF") and len(audio_bytes) > 44:
+        try:
+            with wave.open(io.BytesIO(audio_bytes), 'rb') as wf:
+                if wf.getframerate() == 16000 and wf.getnchannels() == 1:
+                    return audio_bytes
+        except Exception:
+            pass
+
+    try:
+        import imageio_ffmpeg, subprocess
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        proc = subprocess.Popen(
+            [exe, "-y", "-i", "pipe:0", "-ar", "16000", "-ac", "1", "-f", "wav", "pipe:1"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        out, err = proc.communicate(input=audio_bytes)
+        if proc.returncode == 0 and out and len(out) > 44:
+            return out
+    except Exception as e:
+        print("convert_to_wav_16k notice:", e)
+
+    return audio_bytes
+
 @app.post("/api/stt")
 async def speech_to_text_endpoint(
     audio: UploadFile = File(...),
@@ -987,9 +1017,10 @@ async def speech_to_text_endpoint(
     if not audio_bytes or len(audio_bytes) < 100:
         raise HTTPException(status_code=400, detail="Empty or truncated audio recording")
 
+    wav_bytes = convert_to_wav_16k(audio_bytes)
     recognizer = sr.Recognizer()
     try:
-        with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
+        with sr.AudioFile(io.BytesIO(wav_bytes)) as source:
             audio_data = recognizer.record(source)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Audio format error: {str(e)}")

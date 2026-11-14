@@ -221,24 +221,29 @@ export const detectTrueLanguage = (text) => {
   const hasMalayalam = /[\u0D00-\u0D7F]/.test(clean);
   const hasBengali = /[\u0980-\u09FF]/.test(clean);
 
-  // If Telugu script is detected: check if it represents phonetic English words transcribed by legacy ASR
+  // If Telugu script is detected: accurately distinguish genuine Telugu from phonetic English/Hindi loanwords
   if (hasTelugu) {
     const teluguPhoneticEnglish = [
       'హాయ్', 'హలో', 'మై', 'నేమ్', 'ఈజ్', 'ఇస్', 'ఐ', 'వాంట్', 'టు', 'గో', 'హోమ్',
       'ఆపరేట్', 'ఆన్', 'న్యూమరికల్', 'డాటా', 'డేటా', 'నాట్', 'రా', 'టెక్స్ట్', 'బికాజ్',
       'టైర్డ్', 'ప్లీజ్', 'థాంక్స్', 'థాంక్యూ', 'ఎస్', 'నో', 'వెల్కమ్', 'గుడ్', 'మార్నింగ్',
       'ఈవెనింగ్', 'నైట్', 'వెల్', 'డన్', 'కాల్', 'మీ', 'వర్క్', 'జాబ్', 'కంప్యూటర్',
-      'లీవ్', 'లివ్', 'ఇన్', 'హైదరాబాద్', 'హియర్', 'దేర్', 'ఫ్రమ్', 'వైష్ణవి'
+      'లీవ్', 'లివ్', 'ఇన్', 'హైదరాబాద్', 'హియర్', 'దేర్', 'ఫ్రమ్', 'వైష్ణవి', 'రాజ్'
+    ];
+    const teluguGenuine = [
+      'పేరు', 'నేను', 'ఎలా', 'ఉన్నారు', 'ఉన్నాను', 'బాగున్నారా', 'చాలా',
+      'ఇంటికి', 'వెళ్ళాలి', 'అండి', 'ధన్యవాదాలు', 'సహాయం', 'కావాలి', 'లేదు',
+      'మీరు', 'ఏంటి', 'ఎక్కడ', 'ఎప్పుడు', 'బాగుంది'
     ];
     const tokens = clean.split(/\s+/);
     let engCount = 0;
+    let teGenuineCount = 0;
     for (const t of tokens) {
-      if (teluguPhoneticEnglish.some(pw => t.includes(pw))) {
-        engCount++;
-      }
+      if (teluguPhoneticEnglish.some(pw => t.includes(pw))) engCount++;
+      if (teluguGenuine.some(gw => t.includes(gw))) teGenuineCount++;
     }
-    // If predominantly phonetic English loanwords, the actual spoken language was English
-    if ((engCount >= 2 && engCount / tokens.length >= 0.25) || (tokens.length <= 4 && engCount >= 1)) {
+    // If predominantly phonetic English loanwords and not genuine Telugu sentence, actual spoken language was English
+    if (engCount > teGenuineCount || (engCount >= 1 && teGenuineCount === 0)) {
       return 'en';
     }
     return 'te';
@@ -494,7 +499,7 @@ export default function App() {
   // Page 1: Splash (showSplash = true for 2.0s, NO button, auto-transitions)
   // Page 2: Main Standalone Live Translator (currentStage = 'translator')
   // Page 3: Full Bhashora AI Workspace with Sidebar (currentStage = 'workspace')
-  const [currentStage, setCurrentStage] = useState('workspace');
+  const [currentStage, setCurrentStage] = useState('translator');
   const [showSplash, setShowSplash] = useState(true);
   const [activeNav, setActiveNav] = useState('live-interpreter');
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -1592,6 +1597,45 @@ export default function App() {
       resolvedDetectedName = LANGUAGES[resolvedDetectedCode] || resolvedDetectedCode;
     }
 
+    // 🛡️ CRITICAL SCRIPT RECONCILIATION & PHONETIC RESTORATION (Foolproof True Detection)
+    // 1. Spoke English, but transcript arrived in Telugu script (e.g. "మై నేమ్ ఇస్ వైష్ణవి..."):
+    if (resolvedDetectedCode === 'en' && /[\u0C00-\u0C7F]/.test(finalPhrase)) {
+      try {
+        const restored = await performRobustTranslation(finalPhrase, 'te', 'en');
+        if (restored && restored.translated_text && !restored.translated_text.startsWith("Translation service")) {
+          finalPhrase = restored.translated_text.trim();
+          console.log(`[Auto-Detect Restoration] Restored phonetic Telugu to English: "${finalPhrase}"`);
+        }
+      } catch (e) {
+        console.warn("English restoration notice:", e);
+      }
+    }
+
+    // 2. Spoke Hindi, but transcript arrived in Latin/English or Telugu phonetics:
+    if (resolvedDetectedCode === 'hi' && !/[\u0900-\u097F]/.test(finalPhrase)) {
+      try {
+        const fromCode = /[\u0C00-\u0C7F]/.test(finalPhrase) ? 'te' : 'en';
+        const restored = await performRobustTranslation(finalPhrase, fromCode, 'hi');
+        if (restored && restored.translated_text && /[\u0900-\u097F]/.test(restored.translated_text)) {
+          finalPhrase = restored.translated_text.trim();
+        }
+      } catch (e) {
+        console.warn("Hindi restoration notice:", e);
+      }
+    }
+
+    // 3. Spoke Telugu, but transcript arrived in Latin script (e.g. "na peru raj"):
+    if (resolvedDetectedCode === 'te' && !/[\u0C00-\u0C7F]/.test(finalPhrase)) {
+      try {
+        const restored = await performRobustTranslation(finalPhrase, 'en', 'te');
+        if (restored && restored.translated_text && /[\u0C00-\u0C7F]/.test(restored.translated_text)) {
+          finalPhrase = restored.translated_text.trim();
+        }
+      } catch (e) {
+        console.warn("Telugu restoration notice:", e);
+      }
+    }
+
     console.log(`[ASR Complete] Final Phrase: "${finalPhrase}" | Detected: ${resolvedDetectedName} (${resolvedDetectedCode})`);
 
     isProcessingVoiceRef.current = true;
@@ -1703,13 +1747,17 @@ export default function App() {
       if (!fullUtterance) return;
 
       // Real-time live transcript preview in UI
-      setInputText(fullUtterance);
-      setLiveInterimText(fullUtterance);
+      if (sourceLang === 'auto') {
+        setLiveInterimText(fullUtterance ? `Hearing: "${fullUtterance}..."` : "Listening... (Detecting language)");
+      } else {
+        setInputText(fullUtterance);
+        setLiveInterimText(fullUtterance);
+      }
       setSpeakerState('transcribing');
       liveStatusRef.current = 'transcribing';
 
       // Required Debug Log
-      console.log(`[ASR Debug] Turn: ${turn} | Lang: ${sr.lang} | Interim: "${currentInterim}" | Final: "${combinedFinal}"`);
+      console.log(`[ASR Debug] Turn: ${currentSpeakerTurnRef.current || 'A'} | Lang: ${sr.lang} | Interim: "${currentInterim}" | Final: "${combinedFinal}"`);
 
       // Reset the silence debounce timer on every new speech event (interim or final)
       if (speechSilenceTimerRef.current) {
@@ -2799,11 +2847,11 @@ export default function App() {
                     <div className="flex items-center justify-between text-xs text-slate-400 mb-1.5">
                       <span className="font-extrabold uppercase tracking-wide text-blue-400 flex items-center gap-1.5">
                         <Mic className="w-3.5 h-3.5" /> YOU SAID ({
-                          detectedLangName
+                          (detectedLangName && detectedLangName !== 'Auto Detect')
                             ? detectedLangName.toUpperCase()
-                            : detectedCode
+                            : (detectedCode && detectedCode !== 'auto')
                             ? (LANGUAGES[detectedCode] || detectedCode).toUpperCase()
-                            : sourceLang !== 'auto'
+                            : (sourceLang !== 'auto')
                             ? (LANGUAGES[sourceLang] || sourceLang).toUpperCase()
                             : isListening
                             ? 'LISTENING...'
@@ -2817,7 +2865,7 @@ export default function App() {
                       )}
                     </div>
                     <p className="text-xl md:text-2xl font-bold text-slate-100 min-h-[36px] leading-relaxed">
-                      {(isLiveActive && liveInterimText) ? (
+                      {(isLiveActive && liveInterimText && sourceLang !== 'auto') ? (
                         <span className="text-cyan-300 italic">"{liveInterimText}"</span>
                       ) : speakerHeardText ? (
                         `"${speakerHeardText}"`
