@@ -59,6 +59,244 @@ import { translateOffline, OFFLINE_PHRASEBOOK, OFFLINE_PACKS } from './offlineEn
 const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 // =========================================================================
+// LIGHTWEIGHT PURE-JS 16kHz MONO 16-BIT PCM WAV RECORDER
+// Records standard WAV audio for true multilingual backend STT
+// =========================================================================
+function writeWavString(view, offset, string) {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
+}
+
+export function encodeWavBlob(samples, sampleRate = 16000) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+
+  writeWavString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeWavString(view, 8, 'WAVE');
+  writeWavString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true); // Subchunk1Size
+  view.setUint16(20, 1, true); // PCM = 1
+  view.setUint16(22, 1, true); // Mono = 1
+  view.setUint32(24, sampleRate, true); // SampleRate
+  view.setUint32(28, sampleRate * 2, true); // ByteRate
+  view.setUint16(32, 2, true); // BlockAlign
+  view.setUint16(34, 16, true); // BitsPerSample
+  writeWavString(view, 36, 'data');
+  view.setUint32(40, samples.length * 2, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+export function downsampleBuffer(buffer, sourceRate, targetRate = 16000) {
+  if (!buffer || buffer.length === 0) return new Float32Array(0);
+  if (sourceRate === targetRate) return buffer;
+  if (sourceRate < targetRate) return buffer;
+  const ratio = sourceRate / targetRate;
+  const newLength = Math.round(buffer.length / ratio);
+  const result = new Float32Array(newLength);
+  let offsetResult = 0;
+  let offsetSource = 0;
+  while (offsetResult < result.length) {
+    const nextOffsetSource = Math.round((offsetResult + 1) * ratio);
+    let accum = 0;
+    let count = 0;
+    for (let i = offsetSource; i < nextOffsetSource && i < buffer.length; i++) {
+      accum += buffer[i];
+      count++;
+    }
+    result[offsetResult] = count > 0 ? accum / count : 0;
+    offsetResult++;
+    offsetSource = nextOffsetSource;
+  }
+  return result;
+}
+
+export class WavAudioRecorder {
+  constructor() {
+    this.audioContext = null;
+    this.mediaStream = null;
+    this.processor = null;
+    this.source = null;
+    this.samples = [];
+    this.isRecording = false;
+    this.sampleRate = 16000;
+  }
+
+  async start() {
+    this.samples = [];
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+
+    try {
+      this.audioContext = new AudioCtx({ sampleRate: 16000 });
+      this.sampleRate = this.audioContext.sampleRate || 16000;
+    } catch (e) {
+      try {
+        this.audioContext = new AudioCtx();
+        this.sampleRate = this.audioContext.sampleRate || 44100;
+      } catch (err) {
+        console.warn("AudioContext hardware notice:", err);
+        return;
+      }
+    }
+
+    try {
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume();
+      }
+      this.mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true
+        }
+      });
+      this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
+      this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+      this.processor.onaudioprocess = (e) => {
+        if (!this.isRecording) return;
+        const input = e.inputBuffer.getChannelData(0);
+        for (let i = 0; i < input.length; i++) {
+          this.samples.push(input[i]);
+        }
+      };
+      this.source.connect(this.processor);
+      this.processor.connect(this.audioContext.destination);
+      this.isRecording = true;
+    } catch (err) {
+      console.warn("WavAudioRecorder mic access notice:", err);
+    }
+  }
+
+  stop() {
+    this.isRecording = false;
+    if (this.processor) {
+      try { this.processor.disconnect(); } catch (e) {}
+      this.processor = null;
+    }
+    if (this.source) {
+      try { this.source.disconnect(); } catch (e) {}
+      this.source = null;
+    }
+    if (this.mediaStream) {
+      try {
+        this.mediaStream.getTracks().forEach(track => track.stop());
+      } catch (e) {}
+      this.mediaStream = null;
+    }
+    const currentRate = this.sampleRate || 16000;
+    if (this.audioContext && this.audioContext.state !== 'closed') {
+      try { this.audioContext.close(); } catch (e) {}
+      this.audioContext = null;
+    }
+    if (this.samples.length < 800) return null; // Under 0.05s
+    const floatArr = new Float32Array(this.samples);
+    const downsampled = downsampleBuffer(floatArr, currentRate, 16000);
+    return encodeWavBlob(downsampled, 16000);
+  }
+}
+
+// =========================================================================
+// ACCURATE TRUE MULTILINGUAL LANGUAGE & SCRIPT DETECTOR
+// Accurately differentiates spoken English, Hindi, Telugu, Marathi, Tamil, Kannada, etc.
+// Never forces source into Telugu!
+// =========================================================================
+export const detectTrueLanguage = (text) => {
+  if (!text || !text.trim()) return 'en';
+  const clean = text.trim();
+
+  // 1. Script Detection
+  const hasTelugu = /[\u0C00-\u0C7F]/.test(clean);
+  const hasDevanagari = /[\u0900-\u097F]/.test(clean);
+  const hasTamil = /[\u0B80-\u0BFF]/.test(clean);
+  const hasKannada = /[\u0C80-\u0CFF]/.test(clean);
+  const hasMalayalam = /[\u0D00-\u0D7F]/.test(clean);
+  const hasBengali = /[\u0980-\u09FF]/.test(clean);
+
+  // If Telugu script is detected: check if it represents phonetic English words transcribed by legacy ASR
+  if (hasTelugu) {
+    const teluguPhoneticEnglish = [
+      'హాయ్', 'హలో', 'మై', 'నేమ్', 'ఈజ్', 'ఇస్', 'ఐ', 'వాంట్', 'టు', 'గో', 'హోమ్',
+      'ఆపరేట్', 'ఆన్', 'న్యూమరికల్', 'డాటా', 'డేటా', 'నాట్', 'రా', 'టెక్స్ట్', 'బికాజ్',
+      'టైర్డ్', 'ప్లీజ్', 'థాంక్స్', 'థాంక్యూ', 'ఎస్', 'నో', 'వెల్కమ్', 'గుడ్', 'మార్నింగ్',
+      'ఈవెనింగ్', 'నైట్', 'వెల్', 'డన్', 'కాల్', 'మీ', 'వర్క్', 'జాబ్', 'కంప్యూటర్'
+    ];
+    const tokens = clean.split(/\s+/);
+    let engCount = 0;
+    for (const t of tokens) {
+      if (teluguPhoneticEnglish.some(pw => t.includes(pw))) {
+        engCount++;
+      }
+    }
+    // If predominantly phonetic English loanwords, the actual spoken language was English
+    if ((engCount >= 2 && engCount / tokens.length >= 0.35) || (tokens.length <= 2 && engCount >= 1)) {
+      return 'en';
+    }
+    return 'te';
+  }
+
+  // Devanagari: Check Marathi vs Hindi
+  if (hasDevanagari) {
+    const marathiMarkers = ['आहे', 'माझं', 'माझे', 'नाव', 'कसा', 'कशी', 'आहोत', 'राहते', 'राहतो', 'घरी', 'नाही', 'तुम्ही', 'काय', 'कुठे'];
+    if (marathiMarkers.some(m => clean.includes(m))) {
+      return 'mr';
+    }
+    return 'hi';
+  }
+
+  if (hasTamil) return 'ta';
+  if (hasKannada) return 'kn';
+  if (hasMalayalam) return 'ml';
+  if (hasBengali) return 'bn';
+
+  // 2. Latin Text Analysis (English vs Romanized Hindi / Telugu / Tamil / Kannada)
+  const lower = clean.toLowerCase().replace(/[.,?!]/g, '');
+  const words = lower.split(/\s+/);
+
+  const hindiMarkers = new Set([
+    'namaste', 'namaskar', 'mera', 'meri', 'mere', 'naam', 'aap', 'kaise', 'kaisi', 
+    'ho', 'hai', 'hain', 'kya', 'kyun', 'nahi', 'accha', 'theek', 'dhanyawad', 
+    'shukriya', 'ghar', 'jana', 'chahiye', 'chahata', 'karo', 'karna', 'bhai', 'yaar'
+  ]);
+  const teluguMarkers = new Set([
+    'namaskaram', 'meeru', 'nenu', 'ela', 'unnaru', 'unnav', 'peru', 'enti', 
+    'cheppandi', 'kavali', 'ledu', 'bavunnara', 'chala', 'alasi', 'alasataga', 
+    'undi', 'intiki', 'vellali', 'ayyanu', 'andi', 'ra', 'kadu'
+  ]);
+  const tamilMarkers = new Set([
+    'vanakkam', 'neengal', 'neenga', 'eppadi', 'irukkeenga', 'irukiraal', 
+    'en', 'peyar', 'enna', 'nandri', 'aam', 'illai', 'veetukku', 'poga', 'vendum'
+  ]);
+  const kannadaMarkers = new Set([
+    'namaskara', 'neevu', 'hegiddeera', 'hegiddira', 'nanna', 'hesaru', 
+    'enu', 'dhanyavadagalu', 'beku', 'illa', 'manege', 'hogabeku'
+  ]);
+
+  let hiScore = 0, teScore = 0, taScore = 0, knScore = 0;
+  for (const w of words) {
+    if (hindiMarkers.has(w)) hiScore++;
+    if (teluguMarkers.has(w)) teScore++;
+    if (tamilMarkers.has(w)) taScore++;
+    if (kannadaMarkers.has(w)) knScore++;
+  }
+
+  if (teScore > 0 && teScore >= hiScore && teScore >= taScore && teScore >= knScore) return 'te';
+  if (hiScore > 0 && hiScore >= teScore && hiScore >= taScore && hiScore >= knScore) return 'hi';
+  if (taScore > 0 && taScore >= hiScore && taScore >= teScore && taScore >= knScore) return 'ta';
+  if (knScore > 0 && knScore >= hiScore && knScore >= teScore && knScore >= taScore) return 'kn';
+
+  return 'en';
+};
+
+// =========================================================================
 // MULTI-TIERED ROBUST TRANSLATION ENGINE (Zero-Fake Guarantee)
 // Automatically translates meaning. Never returns fake transliteration or source text.
 // =========================================================================
@@ -66,21 +304,20 @@ export const performRobustTranslation = async (text, sl = 'auto', tl = 'en') => 
   if (!text || !text.trim()) return null;
   const cleanText = text.trim();
 
-  // 1. Script auto-detection if source is 'auto' or ambiguous
-  let resolvedSource = sl;
-  if (!resolvedSource || resolvedSource === 'auto') {
-    if (/[\u0C00-\u0C7F]/.test(cleanText)) resolvedSource = 'te'; // Telugu
-    else if (/[\u0B80-\u0BFF]/.test(cleanText)) resolvedSource = 'ta'; // Tamil
-    else if (/[\u0C80-\u0CFF]/.test(cleanText)) resolvedSource = 'kn'; // Kannada
-    else if (/[\u0900-\u097F]/.test(cleanText)) resolvedSource = 'hi'; // Hindi / Marathi
-    else if (/[a-zA-Z]/.test(cleanText)) resolvedSource = 'en'; // English
-    else resolvedSource = 'te';
-  }
+  // 1. Script & language detection if source is 'auto' or ambiguous
+  let resolvedSource = (sl && sl !== 'auto') ? sl : detectTrueLanguage(cleanText);
+  let resolvedTarget = tl || 'en';
 
   // Prevent translating into the exact same language
-  let resolvedTarget = tl;
   if (resolvedSource === resolvedTarget) {
-    resolvedTarget = (resolvedSource === 'te') ? 'ta' : 'te';
+    return {
+      translated_text: cleanText,
+      pronunciation: null,
+      meaning: cleanText,
+      detected_code: resolvedSource,
+      detected_lang: LANGUAGES[resolvedSource] || resolvedSource,
+      engine: 'identity'
+    };
   }
 
   // Tier 1: Backend / Serverless Endpoint (/api/translate)
@@ -91,19 +328,20 @@ export const performRobustTranslation = async (text, sl = 'auto', tl = 'en') => 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         text: cleanText,
-        source_lang: resolvedSource,
+        source_lang: sl === 'auto' ? 'auto' : resolvedSource,
         target_lang: resolvedTarget
       })
     });
     if (resp.ok) {
       const data = await resp.json();
       if (data && data.translated_text && data.translated_text.trim() && data.translated_text.trim().toLowerCase() !== cleanText.toLowerCase()) {
+        const finalDetected = (data.detected_code && data.detected_code !== 'auto') ? data.detected_code : resolvedSource;
         return {
           translated_text: data.translated_text.trim(),
           pronunciation: data.pronunciation || data.transliterated_script || null,
           meaning: data.meaning || (resolvedTarget === 'en' ? data.translated_text.trim() : null),
-          detected_code: data.detected_code || resolvedSource,
-          detected_lang: LANGUAGES[data.detected_code || resolvedSource] || resolvedSource,
+          detected_code: finalDetected,
+          detected_lang: LANGUAGES[finalDetected] || finalDetected,
           engine: data.engine || 'backend_neural'
         };
       }
@@ -296,29 +534,29 @@ export default function App() {
   const [offlineSearch, setOfflineSearch] = useState('');
 
   // Translation State
-  const [sourceLang, setSourceLang] = useState('te');
+  const [sourceLang, setSourceLang] = useState('auto');
   const [targetLang, setTargetLang] = useState('ta');
   const [inputText, setInputText] = useState('');
   const [translatedText, setTranslatedText] = useState('');
-  const [detectedLangName, setDetectedLangName] = useState('Telugu (తెలుగు)');
-  const [detectedCode, setDetectedCode] = useState('te');
+  const [detectedLangName, setDetectedLangName] = useState('');
+  const [detectedCode, setDetectedCode] = useState('');
   const [transliteratedScript, setTransliteratedScript] = useState(null);
   const [isTranslating, setIsTranslating] = useState(false);
   const [latencyMs, setLatencyMs] = useState(0);
 
   // Voice Input Specific State
-  const [voiceLang, setVoiceLang] = useState('te');
+  const [voiceLang, setVoiceLang] = useState('auto');
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [showVoiceStudio, setShowVoiceStudio] = useState(false);
   const [speechInterim, setSpeechInterim] = useState('');
 
   // 🎙️ LIVE INTERPRETER & SMART SPEAKER STATE (Hands-free Continuous Auto-Listen)
-  const [speakerInputLang, setSpeakerInputLang] = useState('te');
+  const [speakerInputLang, setSpeakerInputLang] = useState('auto');
   const [speakerTargetLang, setSpeakerTargetLang] = useState('ta');
-  const [speakerHeardText, setSpeakerHeardText] = useState('మీరు ఎలా ఉన్నారు?');
-  const [speakerTransScript, setSpeakerTransScript] = useState('మీరు ఎలా ఉన్నారు?');
-  const [speakerResponseText, setSpeakerResponseText] = useState('आप कैसे हैं?');
+  const [speakerHeardText, setSpeakerHeardText] = useState('');
+  const [speakerTransScript, setSpeakerTransScript] = useState('');
+  const [speakerResponseText, setSpeakerResponseText] = useState('');
   const [speakerState, setSpeakerState] = useState('idle'); // 'idle' | 'listening' | 'translating' | 'speaking'
   const [speakerContinuous, setSpeakerContinuous] = useState(true);
 
@@ -442,14 +680,21 @@ export default function App() {
   const [userProfile, setUserProfile] = useState(() => {
     try {
       const saved = localStorage.getItem('bhashora_user_profile');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.name && parsed.name !== 'John Doe') return parsed;
+      }
     } catch (e) {}
-    return {
+    const defaultProfile = {
       name: 'Vaishnavi Anugu',
       email: 'vaishnavi@example.com',
       plan: 'Pro Member',
       avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop&crop=face'
     };
+    try {
+      localStorage.setItem('bhashora_user_profile', JSON.stringify(defaultProfile));
+    } catch (e) {}
+    return defaultProfile;
   });
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [editProfileName, setEditProfileName] = useState(userProfile.name);
@@ -461,14 +706,17 @@ export default function App() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [hasUnreadNotifs, setHasUnreadNotifs] = useState(true);
 
-  // Pronunciation Practice Coach State
-  const [practiceLang, setPracticeLang] = useState('ta');
-  const [practicePhrase, setPracticePhrase] = useState('మీరు ఎలా ఉన్నారు?');
+  // Pronunciation Practice Coach State (Synchronized defaults)
+  const [practiceLang, setPracticeLang] = useState('en');
+  const [practicePhrase, setPracticePhrase] = useState('Hello, how are you today?');
   const [practiceSpeed, setPracticeSpeed] = useState(1.0);
 
   const recognitionRef = useRef(null);
   const speakerRecognitionRef = useRef(null);
   const liveRecognitionRef = useRef(null);
+  const wavRecorderRef = useRef(null);
+  const autoClearTimerRef = useRef(null);
+  const AUTO_CLEAR_DELAY_MS = 2000; // 2 seconds visible pause before auto-clearing active screen
   const isLiveActiveRef = useRef(false);
   const twoWayAutoSwitchRef = useRef(true);
   const currentSpeakerTurnRef = useRef('A');
@@ -498,6 +746,27 @@ export default function App() {
   const finalizeUtteranceRef = useRef(null);
   const voicesRef = useRef([]);
   const [cachedVoices, setCachedVoices] = useState([]);
+
+  // Apply dark mode class to document root
+  useEffect(() => {
+    if (darkMode) {
+      document.documentElement.classList.add('dark');
+      document.documentElement.classList.remove('light');
+    } else {
+      document.documentElement.classList.remove('dark');
+      document.documentElement.classList.add('light');
+    }
+  }, [darkMode]);
+
+  // Clean up autoClearTimer on unmount
+  useEffect(() => {
+    return () => {
+      if (autoClearTimerRef.current) {
+        clearTimeout(autoClearTimerRef.current);
+        autoClearTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     silenceThresholdRef.current = silenceThreshold;
@@ -859,10 +1128,11 @@ export default function App() {
     // 📴 ZERO-NETWORK OFFLINE CHECK
     if (isEffectivelyOffline) {
       const off = translateOffline(text, sl, tl, history);
-      if (off && off.translated_text && !off.translated_text.startsWith('[Offline]')) {
+      if (off && off.translated_text) {
+        const offDetected = (sl && sl !== 'auto') ? sl : detectTrueLanguage(text);
         setTranslatedText(off.translated_text);
-        setDetectedLangName(off.detected_lang || 'Offline Local');
-        setDetectedCode(sl === 'auto' ? 'te' : sl);
+        setDetectedLangName(off.detected_lang || LANGUAGES[offDetected] || offDetected);
+        setDetectedCode(offDetected);
         setTransliteratedScript(null);
         setLatencyMs(0);
         setIsTranslating(false);
@@ -872,8 +1142,8 @@ export default function App() {
             id: 'item_' + Date.now(),
             original_text: text,
             translated_text: off.translated_text,
-            detected_lang: off.detected_lang || 'Offline Local',
-            detected_code: sl === 'auto' ? 'te' : sl,
+            detected_lang: off.detected_lang || LANGUAGES[offDetected] || offDetected,
+            detected_code: offDetected,
             target_lang: tl,
             transliterated_script: null,
             favorite: false,
@@ -1020,24 +1290,14 @@ export default function App() {
     }
   }, []);
 
-  // 🎙️ LIVE INTERPRETER ENGINE (Continuous Auto-Listen + Offline + 2-Way Auto-Switch)
+  // 🎙️ LIVE INTERPRETER ENGINE (Continuous Auto-Listen + Offline + True Multi-Language STT)
 
-  const stopLiveInterpretation = useCallback(() => {
-    isLiveActiveRef.current = false;
-    setIsLiveActive(false);
-    setSpeakerState('idle');
-    setLiveInterimText('');
-    accumulatedSpeechRef.current = '';
-    lastSubmittedPhraseRef.current = '';
-    finalizedHistoryRef.current = '';
-    sessionFinalRef.current = '';
-    finalTranscriptRef.current = '';
-    interimTranscriptRef.current = '';
-    utteranceBufferRef.current = '';
-    activeTTSIdRef.current++;
-    activeTranslationRequestIdRef.current++;
-    isProcessingVoiceRef.current = false;
-    currentUtteranceRef.current = null;
+  // 🧹 MANUAL CLEAR: Immediately cancel all active recognition, TTS, and timers, and reset to READY
+  const clearActiveTurn = useCallback(() => {
+    if (autoClearTimerRef.current) {
+      clearTimeout(autoClearTimerRef.current);
+      autoClearTimerRef.current = null;
+    }
     if (speechSilenceTimerRef.current) {
       clearTimeout(speechSilenceTimerRef.current);
       speechSilenceTimerRef.current = null;
@@ -1046,13 +1306,11 @@ export default function App() {
       try { liveRecognitionRef.current.abort(); } catch (e) {}
       liveRecognitionRef.current = null;
     }
-    if (speakerRecognitionRef.current) {
-      try { speakerRecognitionRef.current.abort(); } catch (e) {}
-      speakerRecognitionRef.current = null;
+    if (wavRecorderRef.current) {
+      try { wavRecorderRef.current.stop(); } catch (e) {}
     }
-    if (activeAudioSourceRef.current) {
-      try { activeAudioSourceRef.current.stop(); } catch (e) {}
-      activeAudioSourceRef.current = null;
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
     }
     if (activeAudioRef.current) {
       try {
@@ -1061,41 +1319,60 @@ export default function App() {
       } catch (e) {}
       activeAudioRef.current = null;
     }
-    try {
-      if (typeof window !== 'undefined' && window.speechSynthesis) {
-        window.speechSynthesis.cancel();
-      }
-    } catch (e) {}
-    showToast("Live Interpreter Paused");
+    activeTranslationRequestIdRef.current++;
+    activeTTSIdRef.current++;
+    isProcessingVoiceRef.current = false;
+    currentUtteranceRef.current = null;
+    setIsListening(false);
+    setIsSpeaking(false);
+    setIsLiveActive(false);
+    isLiveActiveRef.current = false;
+    setSpeakerHeardText('');
+    setTranslatedText('');
+    setSpeakerResponseText('');
+    setTransliteratedScript(null);
+    setSpeakerTransScript('');
+    setInputText('');
+    setLiveInterimText('');
+    setDetectedCode('');
+    setDetectedLangName('');
+    setSpeakerState('idle');
+    liveStatusRef.current = 'idle';
   }, []);
 
-  const processSpeakerVoice = useCallback(async (spokenPhrase, forceInputLang = null, forceTargetLang = null) => {
+  const stopLiveInterpretation = useCallback(() => {
+    clearActiveTurn();
+    showToast("Live Interpreter Paused");
+  }, [clearActiveTurn]);
+
+  const processSpeakerVoice = useCallback(async (spokenPhrase, forceDetectedCode = null, forceDetectedName = null) => {
     if (!spokenPhrase || !spokenPhrase.trim()) {
       isProcessingVoiceRef.current = false;
       return;
     }
     isProcessingVoiceRef.current = true;
-    
-    // In Live Mode: determine current speaker turn and appropriate language pair
-    const turn = currentSpeakerTurnRef.current || 'A';
-    setLastSpeakerTurn(turn);
 
-    // Read active selected target and source languages directly:
-    const activeTarget = (targetLang !== 'auto' && targetLang) ? targetLang : (speakerTargetLang || 'ta');
-    const activeSource = (sourceLang !== 'auto' && sourceLang) ? sourceLang : (speakerInputLang || 'te');
+    // Dynamic True Language Identification on the actual spoken utterance
+    const detectedSpokenLang = forceDetectedCode || detectTrueLanguage(spokenPhrase);
+    const detectedNameVal = forceDetectedName || LANGUAGES[detectedSpokenLang] || detectedSpokenLang;
 
-    const langA = activeSource;
-    const langB = activeTarget;
+    // Read active selected target and source languages:
+    const activeTarget = (targetLang !== 'auto' && targetLang) ? targetLang : (speakerTargetLang || 'mr');
+    const activeSource = (sourceLang !== 'auto' && sourceLang) ? sourceLang : detectedSpokenLang;
 
-    // Turn A: Person A speaks langA (e.g. Telugu), translates to langB (e.g. Tamil)
-    // Turn B: Person B speaks langB (e.g. Tamil), translates to langA (e.g. Telugu)
-    let sLang = forceInputLang || (turn === 'A' ? langA : langB);
-    let tLang = forceTargetLang || (turn === 'A' ? langB : langA);
+    let sLang = activeSource;
+    let tLang = activeTarget;
+
+    if (sLang === tLang) {
+      tLang = (sLang === 'en') ? 'mr' : 'en';
+    }
 
     setSpeakerState('translating');
     liveStatusRef.current = 'translating';
     setSpeakerHeardText(spokenPhrase);
-    // Keep inputText and interim preview empty so the text box remains clean and ready for the next sentence!
+    setDetectedCode(detectedSpokenLang);
+    setDetectedLangName(detectedNameVal);
+    // Keep inputText and interim preview empty so text box remains completely clean
     setInputText('');
     setLiveInterimText('');
 
@@ -1114,31 +1391,30 @@ export default function App() {
       setSpeakerResponseText(errorMsg);
       showToast(errorMsg);
       isProcessingVoiceRef.current = false;
-      if (isLiveActiveRef.current) {
-        setTimeout(() => {
-          if (isLiveActiveRef.current && !isProcessingVoiceRef.current && startLiveTurnRef.current) {
-            startLiveTurnRef.current();
-          }
-        }, 1200);
-      } else {
-        setSpeakerState('idle');
-        liveStatusRef.current = 'idle';
-      }
+      setSpeakerState('idle');
+      liveStatusRef.current = 'idle';
       return;
     }
 
     const translated = res.translated_text;
     const translitScript = res.pronunciation;
-    const detectedLang = res.detected_code || sLang;
+    const finalDetectedCode = res.detected_code || detectedSpokenLang;
+    const finalDetectedName = LANGUAGES[finalDetectedCode] || detectedNameVal;
     const engineUsed = res.engine || 'robust_engine';
 
-    // Update state for Page 2 and Page 3
+    // REQUIRED DEBUG CONSOLE LOGS
+    console.log(`[Language Detection] Detected language: ${finalDetectedCode} (${finalDetectedName})`);
+    console.log(`[Translation] Source language: ${sLang}`);
+    console.log(`[Translation] Target language: ${tLang}`);
+    console.log(`[Translation] Response: "${translated}"`);
+
+    // Update state for Display
     setTranslatedText(translated);
     setSpeakerResponseText(translated);
     setSpeakerTransScript(translitScript);
     setTransliteratedScript(translitScript);
-    setDetectedCode(detectedLang);
-    setDetectedLangName(LANGUAGES[detectedLang] || detectedLang);
+    setDetectedCode(finalDetectedCode);
+    setDetectedLangName(finalDetectedName);
     setSpeakerState('speaking');
     liveStatusRef.current = 'speaking';
 
@@ -1148,21 +1424,21 @@ export default function App() {
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
       spoken: spokenPhrase,
       translated: translated,
-      sourceLang: sLang,
+      sourceLang: finalDetectedCode,
       targetLang: tLang,
-      speaker: turn === 'A' ? `Person A (${LANGUAGES[sLang] || sLang})` : `Person B (${LANGUAGES[sLang] || sLang})`,
+      speaker: `Person (${finalDetectedName})`,
       scenario: selectedScenario,
       engine: engineUsed
     };
     setLiveSessionLog(prev => [newLogItem, ...prev]);
 
-    // Record in global History
+    // Record in global History BEFORE clearing the active turn (History is preserved!)
     const newItem = {
       id: 'speak_item_' + Date.now(),
       original_text: spokenPhrase,
       translated_text: translated,
-      detected_lang: LANGUAGES[sLang] || sLang,
-      detected_code: sLang,
+      detected_lang: finalDetectedName,
+      detected_code: finalDetectedCode,
       target_lang: tLang,
       transliterated_script: translitScript,
       favorite: false,
@@ -1171,48 +1447,49 @@ export default function App() {
     };
     setHistory(prev => [newItem, ...prev]);
 
-    // 🔊 AUTOMATIC MANDATORY TEXT-TO-SPEECH PLAYBACK IN CONVERTED LANGUAGE (tLang)
+    // 🔊 AUTOMATIC MANDATORY TEXT-TO-SPEECH PLAYBACK IN TARGET LANGUAGE (tLang)
     speakTranslatedSentence(translated, tLang, () => {
-      // Release lock so next speech turn can proceed cleanly
+      // Speech finished!
       isProcessingVoiceRef.current = false;
-
-      // 🧹 AUTOMATICALLY CLEAR THE TEXT: After Bhashora speaks, clear the input field and interim speech!
-      // The user will never need to clear manually.
-      setInputText('');
-      setLiveInterimText('');
-      accumulatedSpeechRef.current = '';
-      finalTranscriptRef.current = '';
-      interimTranscriptRef.current = '';
-      utteranceBufferRef.current = '';
-      sessionFinalRef.current = '';
-
-      // 🛑 STOP LISTENING & BECOME READY: Do not stay listening indefinitely.
-      // Ready to wait for the next sentence when the user clicks the microphone button again!
+      setIsListening(false);
       setIsLiveActive(false);
       isLiveActiveRef.current = false;
-      setIsListening(false);
-      setSpeakerState('idle');
-      liveStatusRef.current = 'idle';
 
-      if (liveRecognitionRef.current) {
-        try {
-          liveRecognitionRef.current.stop();
-          liveRecognitionRef.current.abort();
-        } catch (e) {}
-        liveRecognitionRef.current = null;
+      // Keep result visible briefly (1-3s configurable, default 2s) before auto-clearing
+      setSpeakerState('result_visible');
+      liveStatusRef.current = 'result_visible';
+
+      if (autoClearTimerRef.current) {
+        clearTimeout(autoClearTimerRef.current);
       }
+      autoClearTimerRef.current = setTimeout(() => {
+        // ✨ AUTOMATICALLY CLEAR CURRENT ACTIVE TURN (Input, transcript, translation, detected lang)
+        // History remains 100% safe in History tab!
+        setSpeakerHeardText('');
+        setTranslatedText('');
+        setSpeakerResponseText('');
+        setTransliteratedScript(null);
+        setSpeakerTransScript('');
+        setInputText('');
+        setLiveInterimText('');
+        setDetectedCode('');
+        setDetectedLangName('');
+        setSpeakerState('idle');
+        liveStatusRef.current = 'idle';
+        autoClearTimerRef.current = null;
+      }, AUTO_CLEAR_DELAY_MS);
     });
   }, [sourceLang, targetLang, speakerInputLang, speakerTargetLang, selectedScenario, speakTranslatedSentence]);
 
-  // Sentence Completion & Dispatch: submits only after complete utterance
-  const finalizeAndSubmitUtterance = useCallback(() => {
+  // Sentence Completion & Dispatch: submits after complete utterance and runs true STT
+  const finalizeAndSubmitUtterance = useCallback(async () => {
     if (isProcessingVoiceRef.current) return;
     if (speechSilenceTimerRef.current) {
       clearTimeout(speechSilenceTimerRef.current);
       speechSilenceTimerRef.current = null;
     }
 
-    // 🛑 Stop and abort speech recognition immediately so mic is completely OFF while translating & speaking
+    // 🛑 Stop and abort speech recognition immediately so mic is OFF while translating & speaking
     if (liveRecognitionRef.current) {
       try { 
         liveRecognitionRef.current.stop(); 
@@ -1223,7 +1500,17 @@ export default function App() {
 
     setIsListening(false);
 
-    const finalPhrase = (
+    // Stop WavAudioRecorder to get the audio blob
+    let audioBlob = null;
+    if (wavRecorderRef.current) {
+      try {
+        audioBlob = wavRecorderRef.current.stop();
+      } catch (e) {
+        console.warn("wavRecorder stop notice:", e);
+      }
+    }
+
+    let preliminaryPhrase = (
       utteranceBufferRef.current || 
       finalTranscriptRef.current || 
       interimTranscriptRef.current || 
@@ -1231,20 +1518,51 @@ export default function App() {
       ''
     ).trim();
 
-    if (!finalPhrase) {
-      // If nothing was said, restart listening cleanly
-      if (isLiveActiveRef.current && !isProcessingVoiceRef.current) {
-        setTimeout(() => {
-          if (isLiveActiveRef.current && !isProcessingVoiceRef.current && startLiveTurnRef.current) {
-            startLiveTurnRef.current();
+    let finalPhrase = preliminaryPhrase;
+    let resolvedDetectedCode = null;
+    let resolvedDetectedName = null;
+
+    // Send audio blob to /api/stt for true multilingual neural speech recognition
+    if (audioBlob) {
+      try {
+        setSpeakerState('processing');
+        liveStatusRef.current = 'processing';
+        const formData = new FormData();
+        formData.append('audio', audioBlob, 'speech.wav');
+        formData.append('source_lang', sourceLang);
+
+        const endpoint = API_BASE_URL ? `${API_BASE_URL}/api/stt` : '/api/stt';
+        const sttResp = await fetch(endpoint, {
+          method: 'POST',
+          body: formData
+        });
+        if (sttResp.ok) {
+          const sttData = await sttResp.json();
+          if (sttData && sttData.transcript && sttData.transcript.trim()) {
+            finalPhrase = sttData.transcript.trim();
+            resolvedDetectedCode = sttData.detected_code;
+            resolvedDetectedName = sttData.detected_lang;
           }
-        }, 150);
+        }
+      } catch (err) {
+        console.warn("Backend STT error, falling back to client transcript:", err);
       }
+    }
+
+    if (!finalPhrase) {
+      // If nothing was captured, reset cleanly to ready
+      isProcessingVoiceRef.current = false;
+      setSpeakerState('idle');
+      liveStatusRef.current = 'idle';
       return;
     }
 
-    const currentLang = liveRecognitionRef.current?.lang || 'unknown';
-    console.log(`[ASR Complete] Lang: ${currentLang} | Submitting Complete Utterance: "${finalPhrase}"`);
+    if (!resolvedDetectedCode) {
+      resolvedDetectedCode = (sourceLang !== 'auto') ? sourceLang : detectTrueLanguage(finalPhrase);
+      resolvedDetectedName = LANGUAGES[resolvedDetectedCode] || resolvedDetectedCode;
+    }
+
+    console.log(`[ASR Complete] Final Phrase: "${finalPhrase}" | Detected: ${resolvedDetectedName} (${resolvedDetectedCode})`);
 
     isProcessingVoiceRef.current = true;
     lastSubmittedPhraseRef.current = finalPhrase;
@@ -1255,17 +1573,19 @@ export default function App() {
     sessionFinalRef.current = '';
     finalizedHistoryRef.current = '';
     
-    // 🧹 IMMEDIATELY CLEAR INPUT FIELD AND INTERIM PREVIEW
+    // Clean input field and interim preview immediately
     setInputText('');
     setLiveInterimText('');
     setSpeakerHeardText(finalPhrase);
+    setDetectedCode(resolvedDetectedCode);
+    setDetectedLangName(resolvedDetectedName);
 
     // State sequence: SENTENCE_COMPLETE -> TRANSLATING
     liveStatusRef.current = 'translating';
     setSpeakerState('translating');
 
-    processSpeakerVoice(finalPhrase);
-  }, [processSpeakerVoice]);
+    processSpeakerVoice(finalPhrase, resolvedDetectedCode, resolvedDetectedName);
+  }, [sourceLang, processSpeakerVoice]);
 
   useEffect(() => {
     finalizeUtteranceRef.current = finalizeAndSubmitUtterance;
@@ -1274,6 +1594,12 @@ export default function App() {
   // Start a single listening turn in the continuous loop
   const startLiveTurn = useCallback(() => {
     if (!isLiveActiveRef.current || isProcessingVoiceRef.current) return;
+
+    // Cancel any pending auto-clear timer when starting a new turn!
+    if (autoClearTimerRef.current) {
+      clearTimeout(autoClearTimerRef.current);
+      autoClearTimerRef.current = null;
+    }
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -1285,28 +1611,29 @@ export default function App() {
       try { liveRecognitionRef.current.abort(); } catch (e) {}
     }
 
+    // Start fresh WavAudioRecorder for high-fidelity audio capture sent to multilingual STT
+    if (wavRecorderRef.current) {
+      try { wavRecorderRef.current.stop(); } catch (e) {}
+      wavRecorderRef.current = null;
+    }
+    wavRecorderRef.current = new WavAudioRecorder();
+    wavRecorderRef.current.start().catch((err) => {
+      console.warn("Could not start WavAudioRecorder:", err);
+    });
+
     const sr = new SpeechRecognition();
     sr.continuous = true;
     sr.interimResults = true;
 
-    // Use current speaker turn to set recognition language:
-    const activeTarget = (targetLang !== 'auto' && targetLang) ? targetLang : (speakerTargetLang || 'hi');
-    const activeSource = (sourceLang !== 'auto' && sourceLang) ? sourceLang : (speakerInputLang || 'te');
-
-    const turn = currentSpeakerTurnRef.current || 'A';
-    const langA = activeSource;
-    const langB = activeTarget;
-    // Turn A: Person A speaks langA (e.g. te-IN). Turn B: Person B speaks langB (e.g. kn-IN or hi-IN)
-    const activeLang = (turn === 'A') ? langA : langB;
-
-    sr.lang = SPEECH_LANGS[activeLang]?.code || (
-      activeLang === 'kn' ? 'kn-IN' : 
-      activeLang === 'te' ? 'te-IN' : 
-      activeLang === 'hi' ? 'hi-IN' : 
-      activeLang === 'ta' ? 'ta-IN' : 
-      activeLang === 'es' ? 'es-ES' : 
-      activeLang === 'en' ? 'en-US' : 'en-IN'
-    );
+    // In Auto Detect mode: ALWAYS use 'en-US' as baseline client speech recognizer!
+    // NEVER allow navigator.language to force 'te-IN' or any regional script transliteration!
+    let srLang = 'en-US';
+    if (sourceLang !== 'auto' && sourceLang) {
+      srLang = SPEECH_LANGS[sourceLang]?.code || 'en-US';
+    } else {
+      srLang = 'en-US';
+    }
+    sr.lang = srLang;
 
     sr.onstart = () => {
       setIsListening(true);
@@ -1642,6 +1969,11 @@ export default function App() {
       stopLiveInterpretation();
     } else {
       // 🧹 Automatically clear previous sentence so screen is fresh and clean!
+      // Cancel any pending autoClearTimer
+      if (autoClearTimerRef.current) {
+        clearTimeout(autoClearTimerRef.current);
+        autoClearTimerRef.current = null;
+      }
       setInputText('');
       setLiveInterimText('');
       setSpeechInterim('');
@@ -1663,8 +1995,8 @@ export default function App() {
       currentSpeakerTurnRef.current = 'A';
       setCurrentSpeakerTurn('A');
       setLastSpeakerTurn('A');
-      const pairLangA = (sourceLang !== 'auto' ? sourceLang : (speakerInputLang || 'te'));
-      const pairLangB = (targetLang !== 'auto' && targetLang) ? targetLang : (speakerTargetLang || 'en');
+      const pairLangA = (sourceLang !== 'auto' ? sourceLang : 'auto');
+      const pairLangB = (targetLang !== 'auto' && targetLang) ? targetLang : (speakerTargetLang || 'mr');
       showToast(`🟢 Live Interpreter ACTIVE: ${LANGUAGES[pairLangA] || pairLangA} ⇄ ${LANGUAGES[pairLangB] || pairLangB}`);
       startLiveTurn();
     }
@@ -1693,7 +2025,7 @@ export default function App() {
     } else {
       try {
         const activeCode = sourceLang !== 'auto' ? sourceLang : voiceLang;
-        const bcp47 = SPEECH_LANGS[activeCode]?.code || 'te-IN';
+        const bcp47 = SPEECH_LANGS[activeCode]?.code || 'en-US';
         recognitionRef.current.lang = bcp47;
         recognitionRef.current.start();
         setIsListening(true);
@@ -1707,7 +2039,7 @@ export default function App() {
   // Swap Languages
   const handleSwapLanguages = () => {
     if (sourceLang === 'auto') {
-      const currentDetected = detectedCode || 'te';
+      const currentDetected = detectedCode || 'en';
       setSourceLang(targetLang);
       setTargetLang(currentDetected);
       setInputText(translatedText);
@@ -2094,15 +2426,80 @@ export default function App() {
               </div>
             </div>
 
-            {/* Top Bar Actions: Status Pill & Explore Tools (Navigates to Page 3) */}
-            <div className="flex items-center gap-3">
+            {/* Top Bar Actions: Status Pill, Theme Toggle, Bell & Explore Tools */}
+            <div className="flex items-center gap-2 sm:gap-3">
               <span className="hidden sm:flex px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-xs font-semibold items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
                 Live Two-Way Interpreter
               </span>
+
+              {/* Theme Toggle Button (Light / Dark) */}
+              <button 
+                onClick={() => {
+                  const next = !darkMode;
+                  setDarkMode(next);
+                  showToast(next ? "Switched to Dark Cyber Theme 🌙" : "Switched to High-Contrast Light Theme ☀️");
+                }}
+                className="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 border border-slate-700/60 text-slate-300 hover:text-white transition-all cursor-pointer active:scale-95 shadow-sm"
+                title={darkMode ? "Switch to Light Theme" : "Switch to Dark Theme"}
+              >
+                {darkMode ? <Sun className="w-4 h-4 text-amber-300" /> : <Moon className="w-4 h-4 text-cyan-300" />}
+              </button>
+
+              {/* Notifications Button & Dropdown */}
+              <div className="relative">
+                <button 
+                  onClick={() => setShowNotifications(prev => !prev)}
+                  className="relative p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 border border-slate-700/60 text-slate-300 hover:text-white transition-all cursor-pointer active:scale-95 shadow-sm"
+                  title="Notifications & System Alerts"
+                >
+                  <Bell className="w-4 h-4" />
+                  {hasUnreadNotifs && (
+                    <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 rounded-full bg-rose-500 ring-2 ring-slate-900 animate-pulse" />
+                  )}
+                </button>
+
+                {showNotifications && (
+                  <div className="absolute right-0 mt-2 w-80 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-4 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
+                    <div className="flex items-center justify-between pb-2.5 border-b border-slate-800">
+                      <div className="flex items-center gap-2">
+                        <Bell className="w-4 h-4 text-indigo-400" />
+                        <span className="text-xs font-bold text-white">System Notifications</span>
+                      </div>
+                      {hasUnreadNotifs && (
+                        <button
+                          onClick={() => {
+                            setHasUnreadNotifs(false);
+                            showToast("All notifications marked as read");
+                          }}
+                          className="text-[10px] text-cyan-400 hover:underline cursor-pointer"
+                        >
+                          Mark all read
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="py-2 space-y-2.5 max-h-64 overflow-y-auto">
+                      <div className="p-2.5 rounded-xl bg-slate-800/60 border border-slate-700/50 text-xs">
+                        <div className="font-bold text-slate-200">✨ Multilingual STT Ready</div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">True Auto Language Detection active for English, Telugu, Hindi, Marathi, Tamil, etc.</div>
+                      </div>
+                      <div className="p-2.5 rounded-xl bg-slate-800/60 border border-slate-700/50 text-xs">
+                        <div className="font-bold text-slate-200">👤 Account Verified</div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">Logged in as {userProfile.name} ({userProfile.email}). Pro Member features unlocked.</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Explore Tools (Navigates to Page 3 Workspace and opens Sidebar) */}
               <button
-                onClick={() => setCurrentStage('workspace')}
-                className="px-4 py-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-700/80 hover:border-indigo-500/50 transition-all cursor-pointer flex items-center gap-2 shadow-md active:scale-95 group"
+                onClick={() => {
+                  setCurrentStage('workspace');
+                  setSidebarOpen(true);
+                }}
+                className="px-3.5 py-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-700/80 hover:border-indigo-500/50 transition-all cursor-pointer flex items-center gap-2 shadow-md active:scale-95 group"
                 title="Open full workspace with sidebar and all tools"
               >
                 <Menu className="w-4 h-4 text-cyan-400 group-hover:scale-110 transition-transform" />
@@ -2266,38 +2663,61 @@ export default function App() {
                   </button>
 
                   {/* State Machine Status Label */}
-                  <div className="mt-4 flex flex-col items-center gap-1.5">
-                    <span className={`text-xs font-extrabold uppercase tracking-wider px-3.5 py-1 rounded-full border ${
-                      isLiveActive && speakerState === 'listening'
-                        ? 'bg-rose-500/20 text-rose-300 border-rose-500/40 animate-pulse' 
-                        : speakerState === 'transcribing'
-                        ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 animate-pulse'
-                        : speakerState === 'translating' 
-                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' 
-                        : speakerState === 'speaking'
-                        ? 'bg-purple-500/20 text-purple-300 border-purple-500/40 animate-pulse'
-                        : 'bg-slate-800/70 text-slate-300 border-slate-700/60'
-                    }`}>
-                      {isLiveActive && speakerState === 'listening' 
-                        ? `🟢 Listening to ${currentSpeakerTurn === 'A' ? 'Person A' : 'Person B'} (${LANGUAGES[currentSpeakerTurn === 'A' ? (sourceLang !== 'auto' ? sourceLang : 'te') : targetLang] || 'Auto'})`
-                        : speakerState === 'transcribing'
-                        ? '✍️ Hearing speech...'
-                        : speakerState === 'translating' 
-                        ? '✨ Translating...' 
-                        : speakerState === 'speaking' 
-                        ? `🔊 Speaking in ${LANGUAGES[currentSpeakerTurn === 'A' ? targetLang : (sourceLang !== 'auto' ? sourceLang : 'te')] || 'Target'}...` 
-                        : '🎙️ Tap to Start Live Interpreter'}
-                    </span>
+                  <div className="mt-4 flex flex-col items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap justify-center">
+                      <span className={`text-xs font-extrabold uppercase tracking-wider px-4 py-1.5 rounded-full border shadow-sm ${
+                        isLiveActive && speakerState === 'listening'
+                          ? 'bg-rose-500/20 text-rose-300 border-rose-500/40 animate-pulse' 
+                          : speakerState === 'transcribing'
+                          ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 animate-pulse'
+                          : speakerState === 'processing'
+                          ? 'bg-blue-500/20 text-blue-300 border-blue-500/40 animate-pulse'
+                          : speakerState === 'translating' 
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' 
+                          : speakerState === 'speaking'
+                          ? 'bg-purple-500/20 text-purple-300 border-purple-500/40 animate-pulse'
+                          : speakerState === 'result_visible'
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                          : 'bg-slate-800/80 text-slate-300 border-slate-700/60'
+                      }`}>
+                        {isLiveActive && speakerState === 'listening' 
+                          ? `🟢 LISTENING... (${sourceLang !== 'auto' ? (LANGUAGES[sourceLang] || sourceLang) : 'AUTO DETECT'})`
+                          : speakerState === 'transcribing'
+                          ? '✍️ Hearing speech...'
+                          : speakerState === 'processing'
+                          ? '⚡ Detecting language & words...'
+                          : speakerState === 'translating' 
+                          ? '✨ Translating...' 
+                          : speakerState === 'speaking' 
+                          ? `🔊 Speaking in ${LANGUAGES[targetLang] || targetLang}...` 
+                          : speakerState === 'result_visible'
+                          ? '✨ Done • Ready'
+                          : '🎙️ Tap to Speak'}
+                      </span>
+
+                      {/* Visible Manual ✕ Clear button: Always available when active or text is present */}
+                      {(speakerHeardText || translatedText || isLiveActive || isListening || isSpeaking || speakerState !== 'idle' || inputText) && (
+                        <button
+                          onClick={clearActiveTurn}
+                          className="px-3 py-1 rounded-full bg-slate-800 hover:bg-rose-950/60 text-slate-400 hover:text-rose-300 border border-slate-700 hover:border-rose-500/50 text-xs font-bold flex items-center gap-1 transition-all cursor-pointer shadow-sm active:scale-95"
+                          title="Clear current translation and reset to ready"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                          <span>✕ Clear</span>
+                        </button>
+                      )}
+                    </div>
+
                     <span className="text-[11px] text-slate-400 font-medium text-center">
                       {isLiveActive && speakerState === 'listening'
-                        ? `Speak in ${LANGUAGES[currentSpeakerTurn === 'A' ? (sourceLang !== 'auto' ? sourceLang : 'te') : targetLang]} • Automatically translates to ${LANGUAGES[currentSpeakerTurn === 'A' ? targetLang : (sourceLang !== 'auto' ? sourceLang : 'te')]}`
+                        ? `Speak naturally • Will translate & speak in ${LANGUAGES[targetLang] || targetLang}`
                         : speakerState === 'transcribing'
                         ? 'Capturing sentence • Finishes when you pause naturally'
                         : speakerState === 'speaking'
-                        ? `Microphone paused while speaking aloud`
-                        : isLiveActive
-                        ? 'Live Interpreter running...'
-                        : `Hands-free 2-way conversation: ${LANGUAGES[sourceLang !== 'auto' ? sourceLang : 'te']} ⇄ ${LANGUAGES[targetLang]}`}
+                        ? `Microphone paused while speaking in ${LANGUAGES[targetLang] || targetLang}`
+                        : speakerState === 'result_visible'
+                        ? 'Auto-clears briefly so next sentence starts fresh'
+                        : `Tap microphone • Multilingual auto-detection active`}
                     </span>
                   </div>
 
@@ -2348,11 +2768,21 @@ export default function App() {
                   <div className="w-full bg-slate-900/90 border border-slate-800/90 rounded-3xl p-5 shadow-xl">
                     <div className="flex items-center justify-between text-xs text-slate-400 mb-1.5">
                       <span className="font-extrabold uppercase tracking-wide text-blue-400 flex items-center gap-1.5">
-                        <Mic className="w-3.5 h-3.5" /> YOU SAID ({LANGUAGES[detectedCode || (currentSpeakerTurn === 'A' ? (sourceLang !== 'auto' ? sourceLang : 'te') : targetLang)] || 'Source'})
+                        <Mic className="w-3.5 h-3.5" /> YOU SAID ({
+                          detectedLangName
+                            ? detectedLangName.toUpperCase()
+                            : detectedCode
+                            ? (LANGUAGES[detectedCode] || detectedCode).toUpperCase()
+                            : sourceLang !== 'auto'
+                            ? (LANGUAGES[sourceLang] || sourceLang).toUpperCase()
+                            : isListening
+                            ? 'LISTENING...'
+                            : 'ENGLISH'
+                        })
                       </span>
-                      {transliteratedScript && (
-                        <span className="text-[11px] bg-indigo-500/15 text-indigo-300 px-2 py-0.5 rounded-md border border-indigo-500/30 font-semibold">
-                          {transliteratedScript}
+                      {detectedCode && detectedCode !== 'auto' && (
+                        <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-blue-500/15 border border-blue-500/30 text-blue-300 font-bold">
+                          Detected: {detectedLangName || LANGUAGES[detectedCode] || detectedCode}
                         </span>
                       )}
                     </div>
@@ -2380,11 +2810,11 @@ export default function App() {
                   <div className="w-full bg-slate-900/90 border border-purple-500/40 rounded-3xl p-5 shadow-xl">
                     <div className="flex items-center justify-between text-xs text-purple-300 mb-1.5">
                       <span className="font-extrabold uppercase tracking-wide flex items-center gap-1.5 text-purple-400">
-                        <Volume2 className="w-3.5 h-3.5 text-purple-400" /> TRANSLATED RESPONSE ({LANGUAGES[currentSpeakerTurn === 'A' ? targetLang : (sourceLang !== 'auto' ? sourceLang : 'te')] || 'Target'})
+                        <Volume2 className="w-3.5 h-3.5 text-purple-400" /> TRANSLATED RESPONSE ({(LANGUAGES[targetLang] || targetLang).toUpperCase()})
                       </span>
                       <div className="flex items-center gap-1.5">
                         <button
-                          onClick={() => speakText(translatedText, currentSpeakerTurn === 'A' ? targetLang : (sourceLang !== 'auto' ? sourceLang : 'te'))}
+                          onClick={() => speakText(translatedText, targetLang)}
                           disabled={!translatedText}
                           className="px-2.5 py-1 rounded-lg bg-purple-600/20 hover:bg-purple-600/40 text-purple-300 border border-purple-500/30 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-30 shadow-sm"
                           title="Replay Voice in Target Language"
@@ -2745,26 +3175,40 @@ export default function App() {
               icon={<Radio className="w-4 h-4 text-rose-400 animate-pulse" />} 
               label="Live Conversation" 
               badge="HERO ⭐"
-              onClick={() => { setActiveNav('live-interpreter'); setActiveMode('talk'); setSidebarOpen(false); }}
+              onClick={() => { 
+                setActiveNav('live-interpreter'); 
+                setActiveMode('talk'); 
+                if (typeof window !== 'undefined' && window.innerWidth < 768) setSidebarOpen(false); 
+              }}
             />
             <SidebarBtn 
               active={activeNav === 'translator'} 
               icon={<Zap className="w-4 h-4 text-amber-400" />} 
               label="Quick Translate" 
-              onClick={() => { setActiveNav('translator'); setSidebarOpen(false); }}
+              onClick={() => { 
+                setActiveNav('translator'); 
+                if (typeof window !== 'undefined' && window.innerWidth < 768) setSidebarOpen(false); 
+              }}
             />
             <SidebarBtn 
               active={activeNav === 'conversation'} 
               icon={<MessageSquare className="w-4 h-4 text-orange-400" />} 
               label="Speak & Translate" 
-              onClick={() => { setActiveNav('conversation'); setSidebarOpen(false); }}
+              onClick={() => { 
+                setActiveNav('conversation'); 
+                if (typeof window !== 'undefined' && window.innerWidth < 768) setSidebarOpen(false); 
+              }}
             />
             <SidebarBtn 
               active={activeNav === 'learn'} 
               icon={<BookOpen className="w-4 h-4 text-pink-400" />} 
               label="Learn & Practice" 
               badge="MODE 2"
-              onClick={() => { setActiveNav('learn'); setActiveMode('learn'); setSidebarOpen(false); }}
+              onClick={() => { 
+                setActiveNav('learn'); 
+                setActiveMode('learn'); 
+                if (typeof window !== 'undefined' && window.innerWidth < 768) setSidebarOpen(false); 
+              }}
             />
 
             <div className="pt-3 pb-1 px-3 text-[10px] uppercase font-bold text-slate-500 tracking-wider">
@@ -2776,21 +3220,30 @@ export default function App() {
               icon={<Sparkles className="w-4 h-4 text-purple-400" />} 
               label="Smart Replies" 
               badge="AI"
-              onClick={() => { setActiveNav('smart-replies'); setSidebarOpen(false); }}
+              onClick={() => { 
+                setActiveNav('smart-replies'); 
+                if (typeof window !== 'undefined' && window.innerWidth < 768) setSidebarOpen(false); 
+              }}
             />
             <SidebarBtn 
               active={activeNav === 'scenarios'} 
               icon={<Layers className="w-4 h-4 text-blue-400" />} 
               label="Scenario Presets" 
               badge={selectedScenario.toUpperCase()}
-              onClick={() => { setActiveNav('scenarios'); setSidebarOpen(false); }}
+              onClick={() => { 
+                setActiveNav('scenarios'); 
+                if (typeof window !== 'undefined' && window.innerWidth < 768) setSidebarOpen(false); 
+              }}
             />
             <SidebarBtn 
               active={activeNav === 'pronunciation'} 
               icon={<Mic className="w-4 h-4 text-emerald-400" />} 
               label="Pronunciation Coach" 
               badge="Coach"
-              onClick={() => { setActiveNav('pronunciation'); setSidebarOpen(false); }}
+              onClick={() => { 
+                setActiveNav('pronunciation'); 
+                if (typeof window !== 'undefined' && window.innerWidth < 768) setSidebarOpen(false); 
+              }}
             />
 
             <div className="pt-3 pb-1 px-3 text-[10px] uppercase font-bold text-slate-500 tracking-wider">
@@ -2802,20 +3255,29 @@ export default function App() {
               icon={<Clock className="w-4 h-4 text-blue-400" />} 
               label="History" 
               badge={history.length}
-              onClick={() => { setActiveNav('history'); setSidebarOpen(false); }}
+              onClick={() => { 
+                setActiveNav('history'); 
+                if (typeof window !== 'undefined' && window.innerWidth < 768) setSidebarOpen(false); 
+              }}
             />
             <SidebarBtn 
               active={activeNav === 'favorites'} 
               icon={<Heart className="w-4 h-4 text-rose-400" />} 
               label="Favorites" 
               badge={favoritesList.length}
-              onClick={() => { setActiveNav('favorites'); setSidebarOpen(false); }}
+              onClick={() => { 
+                setActiveNav('favorites'); 
+                if (typeof window !== 'undefined' && window.innerWidth < 768) setSidebarOpen(false); 
+              }}
             />
             <SidebarBtn 
               active={activeNav === 'analytics'} 
               icon={<BarChart3 className="w-4 h-4 text-cyan-400" />} 
               label="Analytics" 
-              onClick={() => { setActiveNav('analytics'); setSidebarOpen(false); }}
+              onClick={() => { 
+                setActiveNav('analytics'); 
+                if (typeof window !== 'undefined' && window.innerWidth < 768) setSidebarOpen(false); 
+              }}
             />
 
             <div className="pt-3 pb-1 px-3 text-[10px] uppercase font-bold text-slate-500 tracking-wider">
@@ -2827,19 +3289,28 @@ export default function App() {
               icon={<WifiOff className="w-4 h-4 text-emerald-400" />} 
               label="Offline Emergency" 
               badge={isEffectivelyOffline ? "Active" : "Pack"}
-              onClick={() => { setActiveNav('offline'); setSidebarOpen(false); }}
+              onClick={() => { 
+                setActiveNav('offline'); 
+                if (typeof window !== 'undefined' && window.innerWidth < 768) setSidebarOpen(false); 
+              }}
             />
             <SidebarBtn 
               active={activeNav === 'documents'} 
               icon={<FileText className="w-4 h-4 text-cyan-400" />} 
               label="Documents" 
-              onClick={() => { setActiveNav('documents'); setSidebarOpen(false); }}
+              onClick={() => { 
+                setActiveNav('documents'); 
+                if (typeof window !== 'undefined' && window.innerWidth < 768) setSidebarOpen(false); 
+              }}
             />
             <SidebarBtn 
               active={activeNav === 'settings'} 
               icon={<Settings className="w-4 h-4 text-slate-400" />} 
               label="Settings" 
-              onClick={() => { setActiveNav('settings'); setSidebarOpen(false); }}
+              onClick={() => { 
+                setActiveNav('settings'); 
+                if (typeof window !== 'undefined' && window.innerWidth < 768) setSidebarOpen(false); 
+              }}
             />
           </nav>
         </div>

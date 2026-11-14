@@ -37,7 +37,26 @@ def query_neural_translate(text: str, sl: str = 'auto', tl: str = 'en'):
             
     # Fallback to MyMemory
     try:
-        eff_sl = 'te' if sl == 'auto' else sl
+        eff_sl = sl
+        if eff_sl == 'auto':
+            if any('\u0c00' <= char <= '\u0c7f' for char in clean):
+                eff_sl = 'te'
+            elif any('\u0900' <= char <= '\u097f' for char in clean):
+                marathi_markers = ['आहे', 'माझं', 'माझे', 'नाव', 'कसा', 'कशी', 'आहोत', 'राहते', 'राहतो', 'घरी', 'नाही', 'तुम्ही', 'काय', 'कुठे']
+                if any(m in clean for m in marathi_markers) or tl == 'mr':
+                    eff_sl = 'mr'
+                else:
+                    eff_sl = 'hi'
+            elif any('\u0b80' <= char <= '\u0bff' for char in clean):
+                eff_sl = 'ta'
+            elif any('\u0c80' <= char <= '\u0cff' for char in clean):
+                eff_sl = 'kn'
+            elif any('\u0d00' <= char <= '\u0d7f' for char in clean):
+                eff_sl = 'ml'
+            elif any('\u0980' <= char <= '\u09ff' for char in clean):
+                eff_sl = 'bn'
+            else:
+                eff_sl = 'en'
         mm_url = f"https://api.mymemory.translated.net/get?q={encoded}&langpair={eff_sl}|{tl}"
         req = urllib.request.Request(mm_url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=5) as resp:

@@ -7,6 +7,7 @@ import re
 import sqlite3
 import urllib.request
 import urllib.parse
+import concurrent.futures
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +16,7 @@ from langdetect import detect, DetectorFactory
 from dotenv import load_dotenv
 import pypdf
 import docx
+import speech_recognition as sr
 
 from services.orchestrator import BhashoraOrchestrator, EchoBridgeOrchestrator
 from services.language_service import SUPPORTED_LANGUAGES
@@ -86,11 +88,17 @@ def init_db():
             VALUES (?, ?, ?, ?, ?)
         ''', (
             'usr_1',
-            'John Doe',
-            'john@example.com',
+            'Vaishnavi Anugu',
+            'vaishnavi@example.com',
             'Pro Member',
             'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop&crop=face'
         ))
+    else:
+        cur.execute('''
+            UPDATE users 
+            SET name = 'Vaishnavi Anugu', email = 'vaishnavi@example.com' 
+            WHERE name = 'John Doe' OR email = 'john@example.com'
+        ''')
     conn.commit()
     conn.close()
 
@@ -314,16 +322,30 @@ def resolve_semantic_meaning(text: str, target_lang: str) -> Optional[tuple[str,
                     else:
                         trans = base_en
                 
-                # Determine native script representation
+                # Determine detected code and script representation
                 script = None
                 if any('\u0c00' <= char <= '\u0c7f' for char in text):
+                    detected_code = 'te'
                     script = text.strip()
+                elif any('\u0900' <= char <= '\u097f' for char in text):
+                    detected_code = 'hi'
+                    script = text.strip()
+                elif any('\u0b80' <= char <= '\u0bff' for char in text):
+                    detected_code = 'ta'
+                    script = text.strip()
+                elif any('\u0c80' <= char <= '\u0cff' for char in text):
+                    detected_code = 'kn'
+                    script = text.strip()
+                elif clean_no_punct in ('hello', 'hi', 'hey', 'good morning', 'good night', 'thank you', 'thanks', 'how are you'):
+                    detected_code = 'en'
+                    script = None
                 elif clean_no_punct in POPULAR_ROMANIZED:
-                    script = POPULAR_ROMANIZED[clean_no_punct][0]
-                elif data.get('translations', {}).get('te'):
-                    script = data['translations']['te']
+                    script, detected_code = POPULAR_ROMANIZED[clean_no_punct]
+                else:
+                    detected_code = data.get('detected_code', 'en')
+                    script = data.get('translations', {}).get(detected_code)
 
-                return trans, data.get('detected_code', 'te'), script
+                return trans, detected_code, script
     return None
 
 TRANSLATION_CACHE = {}
@@ -443,6 +465,53 @@ def read_root():
 @app.get("/api/languages")
 def get_languages():
     return SUPPORTED_LANGUAGES
+
+@app.get("/api/user")
+def get_user_profile():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, email, plan, avatar FROM users LIMIT 1")
+    row = cur.fetchone()
+    conn.close()
+    if row:
+        return {"id": row[0], "name": row[1], "email": row[2], "plan": row[3], "avatar": row[4]}
+    return {
+        "id": "usr_1",
+        "name": "Vaishnavi Anugu",
+        "email": "vaishnavi@example.com",
+        "plan": "Pro Member",
+        "avatar": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop&crop=face"
+    }
+
+class UserUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    plan: Optional[str] = None
+    avatar: Optional[str] = None
+
+@app.post("/api/user")
+def update_user_profile(req: UserUpdateRequest):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, email, plan, avatar FROM users LIMIT 1")
+    row = cur.fetchone()
+    if row:
+        new_name = req.name or row[1]
+        new_email = req.email or row[2]
+        new_plan = req.plan or row[3]
+        new_avatar = req.avatar or row[4]
+        cur.execute("UPDATE users SET name = ?, email = ?, plan = ?, avatar = ? WHERE id = ?",
+                    (new_name, new_email, new_plan, new_avatar, row[0]))
+    else:
+        new_name = req.name or "Vaishnavi Anugu"
+        new_email = req.email or "vaishnavi@example.com"
+        new_plan = req.plan or "Pro Member"
+        new_avatar = req.avatar or "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop&crop=face"
+        cur.execute("INSERT INTO users (id, name, email, plan, avatar) VALUES ('usr_1', ?, ?, ?, ?)",
+                    (new_name, new_email, new_plan, new_avatar))
+    conn.commit()
+    conn.close()
+    return {"status": "success", "user": {"name": new_name, "email": new_email, "plan": new_plan, "avatar": new_avatar}}
 
 @app.post("/api/translate")
 def translate_endpoint(req: TranslateRequest):
@@ -811,6 +880,218 @@ def score_pronunciation_endpoint(req: PronounceScoreRequest):
         "reference": req.reference_text,
         "attempt": req.spoken_attempt,
         "matched_words": matched_words
+    }
+
+def score_stt_language_candidate(lang_code: str, text: str) -> float:
+    if not text or not text.strip():
+        return 0.0
+    clean = text.strip().lower()
+    words = clean.split()
+    
+    # 1. English evaluation
+    if lang_code == 'en':
+        eng_common = {
+            'my', 'name', 'is', 'i', 'live', 'in', 'hello', 'hi', 'how', 'are', 'you',
+            'want', 'to', 'go', 'home', 'the', 'a', 'an', 'this', 'that', 'we', 'they',
+            'please', 'thank', 'thanks', 'good', 'morning', 'night', 'tired', 'because',
+            'operate', 'on', 'numerical', 'data', 'not', 'raw', 'text', 'am', 'was', 'do',
+            'can', 'help', 'need', 'me', 'what', 'where', 'when', 'why', 'fine', 'yes', 'no'
+        }
+        match_count = sum(1 for w in words if w.strip(".,?!") in eng_common)
+        has_non_latin = any(ord(c) > 127 for c in clean)
+        if has_non_latin:
+            return 1.0
+        return 15.0 + (match_count * 6.0)
+
+    # 2. Telugu evaluation
+    elif lang_code == 'te':
+        has_telugu = any('\u0C00' <= c <= '\u0C7F' for c in text)
+        if not has_telugu:
+            return 0.0
+        te_phonetic_english = {
+            'మై', 'నేమ్', 'ఈజ్', 'ఇస్', 'ఐ', 'వాంట్', 'టు', 'గో', 'హోమ్',
+            'ఆపరేట్', 'ఆన్', 'న్యూమరికల్', 'డాటా', 'డేటా', 'నాట్', 'రా', 'టెక్స్ట్',
+            'బికాజ్', 'టైర్డ్', 'ప్లీజ్', 'థాంక్స్', 'థాంక్యూ', 'ఎస్', 'నో', 'గుడ్',
+            'మార్నింగ్', 'నైట్', 'హాయ్', 'హలో'
+        }
+        phonetic_matches = sum(1 for w in words if any(p in w for p in te_phonetic_english))
+        if phonetic_matches >= 2 or (len(words) <= 3 and phonetic_matches >= 1):
+            return 1.0  # Heavy penalty: spoken English transcribed into Telugu characters
+        
+        te_genuine = {
+            'పేరు', 'నేను', 'ఎలా', 'ఉన్నారు', 'ఉన్నాను', 'బాగున్నారా', 'చాలా',
+            'ఇంటికి', 'వెళ్ళాలి', 'అండి', 'ధన్యవాదాలు', 'సహాయం', 'కావాలి', 'లేదు',
+            'మీరు', 'ఏంటి', 'ఎక్కడ', 'ఎప్పుడు', 'బాగుంది'
+        }
+        genuine_matches = sum(1 for w in words if any(g in w for g in te_genuine))
+        return 12.0 + (genuine_matches * 6.0)
+
+    # 3. Hindi evaluation
+    elif lang_code == 'hi':
+        has_devanagari = any('\u0900' <= c <= '\u097F' for c in text)
+        if not has_devanagari:
+            return 0.0
+        hi_phonetic = {'माय', 'नेम', 'इस', 'आई', 'लिव', 'इन', 'वांट', 'गो', 'होम'}
+        if sum(1 for w in words if any(p in w for p in hi_phonetic)) >= 2:
+            return 1.0
+        hi_genuine = {
+            'नाम', 'मेरा', 'मेरी', 'मेरे', 'है', 'हैं', 'हूँ', 'कैसे', 'कैसी',
+            'घर', 'जाना', 'चाहिए', 'नमस्ते', 'धन्यवाद', 'मदद', 'आप', 'क्या', 'कहाँ'
+        }
+        genuine_matches = sum(1 for w in words if any(g in w for g in hi_genuine))
+        return 12.0 + (genuine_matches * 6.0)
+
+    # 4. Marathi evaluation
+    elif lang_code == 'mr':
+        has_devanagari = any('\u0900' <= c <= '\u097F' for c in text)
+        if not has_devanagari:
+            return 0.0
+        mr_genuine = {
+            'नाव', 'माझं', 'माझे', 'आहे', 'आहोत', 'कसा', 'कशी', 'घरी', 'नमस्कार',
+            'धन्यवाद', 'राहते', 'राहतो', 'तुम्ही', 'काय', 'कुठे', 'नाही'
+        }
+        genuine_matches = sum(1 for w in words if any(g in w for g in mr_genuine))
+        return 12.0 + (genuine_matches * 6.0)
+
+    # 5. Tamil evaluation
+    elif lang_code == 'ta':
+        has_tamil = any('\u0B80' <= c <= '\u0BFF' for c in text)
+        if not has_tamil:
+            return 0.0
+        ta_genuine = {'பெயர்', 'வணக்கம்', 'எப்படி', 'இருக்கிறீர்கள்', 'நன்றி', 'என்', 'நீங்கள்', 'வீட்டிற்கு'}
+        matches = sum(1 for w in words if any(g in w for g in ta_genuine))
+        return 12.0 + (matches * 6.0)
+
+    # 6. Kannada evaluation
+    elif lang_code == 'kn':
+        has_kannada = any('\u0C80' <= c <= '\u0CFF' for c in text)
+        if not has_kannada:
+            return 0.0
+        kn_genuine = {'ಹೆಸರು', 'ನನ್ನ', 'ಹೇಗಿದ್ದೀರಿ', 'ಮನೆಗೆ', 'ಹೋಗಬೇಕು', 'ಧನ್ಯವಾದಗಳು', 'ನೀವು', 'ಏನು'}
+        matches = sum(1 for w in words if any(g in w for g in kn_genuine))
+        return 12.0 + (matches * 6.0)
+
+    return 5.0
+
+@app.post("/api/stt")
+async def speech_to_text_endpoint(
+    audio: UploadFile = File(...),
+    source_lang: Optional[str] = Form('auto')
+):
+    """
+    Multilingual Speech-to-Text with True Automatic Language Identification.
+    Identifies English, Telugu, Hindi, Marathi, Tamil, Kannada, and other languages.
+    Never forces source text into Telugu!
+    """
+    audio_bytes = await audio.read()
+    if not audio_bytes or len(audio_bytes) < 100:
+        raise HTTPException(status_code=400, detail="Empty or truncated audio recording")
+
+    recognizer = sr.Recognizer()
+    try:
+        with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
+            audio_data = recognizer.record(source)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Audio format error: {str(e)}")
+
+    loc_map = {
+        'en': 'en-US',
+        'te': 'te-IN',
+        'hi': 'hi-IN',
+        'mr': 'mr-IN',
+        'ta': 'ta-IN',
+        'kn': 'kn-IN',
+        'ml': 'ml-IN',
+        'bn': 'bn-IN',
+        'gu': 'gu-IN',
+        'es': 'es-ES',
+        'fr': 'fr-FR'
+    }
+
+    # 1. Explicit source language provided (not 'auto')
+    if source_lang and source_lang != 'auto':
+        target_loc = loc_map.get(source_lang, 'en-US')
+        try:
+            transcript = recognizer.recognize_google(audio_data, language=target_loc)
+            return {
+                "transcript": transcript.strip(),
+                "detected_code": source_lang,
+                "detected_lang": SUPPORTED_LANGUAGES.get(source_lang, source_lang),
+                "confidence": 0.95
+            }
+        except Exception as e:
+            return {
+                "transcript": "",
+                "detected_code": source_lang,
+                "detected_lang": SUPPORTED_LANGUAGES.get(source_lang, source_lang),
+                "error": str(e)
+            }
+
+    # 2. AUTO DETECT MODE: Probe supported candidate languages in parallel
+    candidates = [
+        ('en', 'en-US'),
+        ('te', 'te-IN'),
+        ('hi', 'hi-IN'),
+        ('mr', 'mr-IN'),
+        ('ta', 'ta-IN'),
+        ('kn', 'kn-IN')
+    ]
+
+    candidate_results = {}
+    def run_rec(c_code, c_loc):
+        try:
+            res = recognizer.recognize_google(audio_data, language=c_loc, show_all=True)
+            if res and isinstance(res, dict) and 'alternative' in res and res['alternative']:
+                top_text = res['alternative'][0].get('transcript', '')
+                if top_text and top_text.strip():
+                    return c_code, top_text.strip()
+        except Exception:
+            pass
+        return c_code, None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        futures = [executor.submit(run_rec, code, loc) for code, loc in candidates]
+        for f in concurrent.futures.as_completed(futures):
+            c_code, t_text = f.result()
+            if t_text:
+                candidate_results[c_code] = t_text
+
+    if not candidate_results:
+        # Fallback single English probe
+        try:
+            fallback_text = recognizer.recognize_google(audio_data, language='en-US')
+            return {
+                "transcript": fallback_text.strip(),
+                "detected_code": "en",
+                "detected_lang": "English",
+                "confidence": 0.7
+            }
+        except Exception:
+            return {
+                "transcript": "",
+                "detected_code": "en",
+                "detected_lang": "English",
+                "confidence": 0.0
+            }
+
+    # Score all candidate results
+    best_code = 'en'
+    best_score = -1.0
+    best_transcript = ''
+
+    for c_code, t_text in candidate_results.items():
+        score = score_stt_language_candidate(c_code, t_text)
+        if score > best_score:
+            best_score = score
+            best_code = c_code
+            best_transcript = t_text
+
+    return {
+        "transcript": best_transcript,
+        "detected_code": best_code,
+        "detected_lang": SUPPORTED_LANGUAGES.get(best_code, best_code.upper()),
+        "confidence": round(min(1.0, best_score / 30.0), 2),
+        "candidates_evaluated": list(candidate_results.keys())
     }
 
 @app.post("/api/document/translate")
