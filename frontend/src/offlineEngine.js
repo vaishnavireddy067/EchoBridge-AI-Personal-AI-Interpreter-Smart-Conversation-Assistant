@@ -500,7 +500,7 @@ export function translateOffline(inputText, sourceLang = 'auto', targetLang = 'e
   }
 
   return {
-    translated_text: `[Offline] ${inputText}`,
+    translated_text: inputText,
     source_phrase: inputText,
     detected_lang: sourceLang,
     target_lang: targetLang,

@@ -58,6 +58,45 @@ import { translateOffline, OFFLINE_PHRASEBOOK, OFFLINE_PACKS } from './offlineEn
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
 
+const clientDirectTranslate = async (text, sl = 'auto', tl = 'en') => {
+  if (!text || !text.trim()) return null;
+  try {
+    const cleanText = text.trim();
+    const encoded = encodeURIComponent(cleanText);
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${tl}&dt=t&dt=rm&q=${encoded}`;
+    const resp = await fetch(url);
+    if (resp.ok) {
+      const data = await resp.json();
+      let trans = '';
+      let targetRoman = null;
+      let sourceRoman = null;
+      if (data && data[0]) {
+        for (const item of data[0]) {
+          if (item && item[0] && typeof item[0] === 'string') {
+            trans += item[0];
+          } else if (item && Array.isArray(item)) {
+            if (item.length > 2 && item[2]) targetRoman = item[2];
+            if (item.length > 3 && item[3]) sourceRoman = item[3];
+          }
+        }
+      }
+      const det = (data && data[2]) ? data[2] : (sl === 'auto' ? 'te' : sl);
+      if (trans && trans.trim()) {
+        return {
+          translated_text: trans.trim(),
+          detected_code: det,
+          detected_lang: LANGUAGES[det] || det,
+          pronunciation: targetRoman,
+          meaning: tl === 'en' ? trans.trim() : null
+        };
+      }
+    }
+  } catch (err) {
+    console.warn("Client direct translation notice:", err);
+  }
+  return null;
+};
+
 const LANGUAGES = {
   auto: "Auto Detect",
   en: "English",
@@ -715,7 +754,7 @@ export default function App() {
     // 📴 ZERO-NETWORK OFFLINE CHECK
     if (isEffectivelyOffline) {
       const off = translateOffline(text, sl, tl, history);
-      if (off) {
+      if (off && off.translated_text && !off.translated_text.startsWith('[Offline]')) {
         setTranslatedText(off.translated_text);
         setDetectedLangName(off.detected_lang || 'Offline Local');
         setDetectedCode(sl === 'auto' ? 'te' : sl);
@@ -798,7 +837,34 @@ export default function App() {
       }
     } catch (e) {
       if (e.name !== 'AbortError') {
-        console.error("Translation error", e);
+        const direct = await clientDirectTranslate(text, sl, tl);
+        if (direct && direct.translated_text) {
+          setTranslatedText(direct.translated_text);
+          setDetectedLangName(direct.detected_lang);
+          setDetectedCode(direct.detected_code);
+          setTransliteratedScript(direct.pronunciation);
+          setLatencyMs(Math.round(performance.now() - startTime));
+          if (saveToHistory) {
+            const newItem = {
+              id: 'item_' + Date.now(),
+              original_text: text,
+              translated_text: direct.translated_text,
+              detected_lang: direct.detected_lang,
+              detected_code: direct.detected_code,
+              target_lang: tl,
+              transliterated_script: direct.pronunciation,
+              favorite: false,
+              time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              timestamp: Date.now()
+            };
+            setHistory(prev => [newItem, ...prev.filter(p => p.original_text !== text)]);
+          }
+          if (saveToHistory && autoSpeak && !isLiveActiveRef.current && direct.translated_text) {
+            speakText(direct.translated_text, tl);
+          }
+        } else {
+          console.error("Translation error", e);
+        }
       }
     } finally {
       setIsTranslating(false);
@@ -936,9 +1002,23 @@ export default function App() {
     // 📴 Check Offline Engine first if forced or internet is down
     if (isEffectivelyOffline) {
       const off = translateOffline(spokenPhrase, sLang, tLang, history);
-      translated = off ? off.translated_text : `[Offline] ${spokenPhrase}`;
-      detectedLang = off?.detected_lang || sLang;
-      engineUsed = 'offline_engine';
+      if (off && off.translated_text && !off.translated_text.startsWith('[Offline]')) {
+        translated = off.translated_text;
+        detectedLang = off?.detected_lang || sLang;
+        engineUsed = 'offline_engine';
+      } else {
+        const direct = await clientDirectTranslate(spokenPhrase, sLang, tLang);
+        if (direct && direct.translated_text) {
+          translated = direct.translated_text;
+          translitScript = direct.pronunciation;
+          detectedLang = direct.detected_lang;
+          engineUsed = 'browser_neural_direct';
+        } else {
+          translated = off ? off.translated_text.replace(/^\[Offline\]\s*/, '') : spokenPhrase;
+          detectedLang = sLang;
+          engineUsed = 'offline_engine';
+        }
+      }
     } else {
       try {
         const resp = await fetch(`${API_BASE_URL}/api/translate`, {
@@ -991,16 +1071,32 @@ export default function App() {
           setCodeMixedInfo({ isCodeMixed: data.code_mixed, type: data.code_mixed_type });
           setPolitenessInfo({ flag: data.politeness_flag, tip: data.politeness_tip, suggestion: data.politeness_suggestion });
         } else {
-          // Fallback to offline
+          // Direct browser neural translation fallback
+          const direct = await clientDirectTranslate(spokenPhrase, sLang, tLang);
+          if (direct && direct.translated_text) {
+            translated = direct.translated_text;
+            translitScript = direct.pronunciation;
+            detectedLang = direct.detected_lang;
+            engineUsed = 'browser_neural_direct';
+          } else {
+            const off = translateOffline(spokenPhrase, sLang, tLang, history);
+            translated = off ? off.translated_text : spokenPhrase;
+            engineUsed = 'offline_fallback';
+          }
+        }
+      } catch (e) {
+        console.warn("Speech translation network notice, using direct neural fallback", e);
+        const direct = await clientDirectTranslate(spokenPhrase, sLang, tLang);
+        if (direct && direct.translated_text) {
+          translated = direct.translated_text;
+          translitScript = direct.pronunciation;
+          detectedLang = direct.detected_lang;
+          engineUsed = 'browser_neural_direct';
+        } else {
           const off = translateOffline(spokenPhrase, sLang, tLang, history);
           translated = off ? off.translated_text : spokenPhrase;
           engineUsed = 'offline_fallback';
         }
-      } catch (e) {
-        console.warn("Speech translation network notice, using offline fallback", e);
-        const off = translateOffline(spokenPhrase, sLang, tLang, history);
-        translated = off ? off.translated_text : spokenPhrase;
-        engineUsed = 'offline_fallback';
       }
     }
 
@@ -1052,6 +1148,15 @@ export default function App() {
     speakTranslatedSentence(translated, tLang, () => {
       // Release lock so next speech turn can proceed cleanly
       isProcessingVoiceRef.current = false;
+
+      // 🧹 Clear the input field and interim transcript so the screen is clean and ready for the next sentence!
+      setInputText('');
+      setLiveInterimText('');
+      accumulatedSpeechRef.current = '';
+      finalTranscriptRef.current = '';
+      interimTranscriptRef.current = '';
+      utteranceBufferRef.current = '';
+      sessionFinalRef.current = '';
 
       if (isLiveActiveRef.current) {
         // Automatically alternate speaker turn ONLY if on workspace page AND twoWayAutoSwitch is enabled
@@ -1993,6 +2098,59 @@ export default function App() {
                   {translatedText ? `"${translatedText}"` : <span className="text-slate-600 text-base italic">Translated speech will appear and speak here...</span>}
                 </p>
               </div>
+
+              {/* Real-time Conversation History stream */}
+              {liveSessionLog && liveSessionLog.length > 0 && (
+                <div className="w-full pt-4 space-y-3">
+                  <div className="flex items-center justify-between px-1">
+                    <span className="text-xs font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-indigo-400" /> Continuous Conversation Turns ({liveSessionLog.length})
+                    </span>
+                    <button
+                      onClick={() => setLiveSessionLog([])}
+                      className="text-[11px] text-slate-500 hover:text-rose-400 transition-colors cursor-pointer"
+                    >
+                      Clear Log
+                    </button>
+                  </div>
+
+                  <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
+                    {liveSessionLog.map((log) => (
+                      <div
+                        key={log.id}
+                        className="bg-slate-900/80 border border-slate-800/80 hover:border-slate-700/80 rounded-2xl p-3.5 shadow-lg space-y-2 transition-all"
+                      >
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-bold text-cyan-400 flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+                            {log.speaker}
+                          </span>
+                          <span className="text-slate-500">{log.time}</span>
+                        </div>
+
+                        {/* Spoken original */}
+                        <div className="text-sm font-semibold text-slate-200 pl-3 border-l-2 border-blue-500/50">
+                          "{log.spoken}"
+                        </div>
+
+                        {/* Translated */}
+                        <div className="flex items-center justify-between bg-slate-950/60 rounded-xl p-2.5 border border-purple-500/20">
+                          <span className="text-sm font-bold text-transparent bg-gradient-to-r from-purple-300 to-indigo-200 bg-clip-text">
+                            "{log.translated}"
+                          </span>
+                          <button
+                            onClick={() => speakText(log.translated, log.targetLang)}
+                            className="p-1 rounded-lg text-purple-400 hover:text-purple-300 hover:bg-purple-950/50 transition-colors"
+                            title="Listen"
+                          >
+                            <Volume2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
           </main>

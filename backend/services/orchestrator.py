@@ -1,5 +1,8 @@
 import time
 import re
+import urllib.request
+import urllib.parse
+import json
 from typing import Optional, List, Dict, Any
 
 from .language_service import (
@@ -182,6 +185,34 @@ class BhashoraOrchestrator:
                 person_name = entities[-1]
                 trans_text = re.sub(r'\b(he)\b', f'he ({person_name})', trans_text, count=1, flags=re.IGNORECASE)
 
+        # -------------------------------------------------------------
+        # STEP F: PRONUNCIATION & MEANING FOR LEARN / INTERPRETATION
+        # -------------------------------------------------------------
+        pronunciation = None
+        meaning = None
+        if trans_text:
+            if tl == 'en':
+                meaning = trans_text
+                pronunciation = transliterated_script or trans_text
+            else:
+                try:
+                    probe_url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={tl}&tl=en&dt=t&dt=rm&q={urllib.parse.quote(trans_text)}"
+                    probe_req = urllib.request.Request(probe_url, headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(probe_req, timeout=3) as probe_resp:
+                        probe_data = json.loads(probe_resp.read().decode('utf-8'))
+                        if probe_data and len(probe_data) > 0 and probe_data[0]:
+                            for item in probe_data[0]:
+                                if item and isinstance(item, list) and len(item) > 3 and item[3]:
+                                    pronunciation = item[3]
+                                elif item and isinstance(item, list) and len(item) > 0 and isinstance(item[0], str) and not meaning:
+                                    meaning = item[0]
+                except Exception:
+                    pass
+                if not meaning:
+                    meaning = trans_text
+                if not pronunciation:
+                    pronunciation = transliterated_script or trans_text
+
         latency = round((time.time() - start_time) * 1000, 1)
 
         result = {
@@ -190,6 +221,8 @@ class BhashoraOrchestrator:
             "detected_code": detected_code,
             "detected_lang": SUPPORTED_LANGUAGES.get(detected_code, str(detected_code).upper()),
             "target_lang": tl,
+            "pronunciation": pronunciation,
+            "meaning": meaning,
             "transliterated_script": transliterated_script,
             "execution_path": execution_path,
             "tone": tone_val,
