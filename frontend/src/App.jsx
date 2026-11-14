@@ -209,6 +209,33 @@ export class WavAudioRecorder {
 // Accurately differentiates spoken English, Hindi, Telugu, Marathi, Tamil, Kannada, etc.
 // Never forces source into Telugu!
 // =========================================================================
+export const isPhoneticEnglishInTelugu = (text) => {
+  if (!text || typeof text !== 'string') return false;
+  const clean = text.trim();
+  if (!/[\u0C00-\u0C7F]/.test(clean)) return false;
+  const teluguPhoneticEnglish = [
+    'హాయ్', 'హలో', 'మై', 'నేమ్', 'ఈజ్', 'ఇస్', 'ఐ', 'వాంట్', 'టు', 'గో', 'హోమ్',
+    'ఆపరేట్', 'ఆన్', 'న్యూమరికల్', 'డాటా', 'డేటా', 'నాట్', 'రా', 'టెక్స్ట్', 'బికాజ్',
+    'టైర్డ్', 'ప్లీజ్', 'థాంక్స్', 'థాంక్యూ', 'ఎస్', 'నో', 'వెల్కమ్', 'గుడ్', 'మార్నింగ్',
+    'ఈవెనింగ్', 'నైట్', 'వెల్', 'డన్', 'కాల్', 'మీ', 'వర్క్', 'జాబ్', 'కంప్యూటర్',
+    'లీవ్', 'లివ్', 'ఇన్', 'హైదరాబాద్', 'హియర్', 'దేర్', 'ఫ్రమ్', 'వైష్ణవి', 'రాజ్',
+    'హౌ', 'ఆర్', 'యు', 'ఫైన్'
+  ];
+  const teluguGenuine = [
+    'పేరు', 'నేను', 'ఎలా', 'ఉన్నారు', 'ఉన్నాను', 'బాగున్నారా', 'చాలా',
+    'ఇంటికి', 'వెళ్ళాలి', 'అండి', 'ధన్యవాదాలు', 'సహాయం', 'కావాలి', 'లేదు',
+    'మీరు', 'ఏంటి', 'ఎక్కడ', 'ఎప్పుడు', 'బాగుంది'
+  ];
+  const tokens = clean.split(/\s+/);
+  let engCount = 0;
+  let teGenuineCount = 0;
+  for (const t of tokens) {
+    if (teluguPhoneticEnglish.some(pw => t.includes(pw))) engCount++;
+    if (teluguGenuine.some(gw => t.includes(gw))) teGenuineCount++;
+  }
+  return (engCount > teGenuineCount || (engCount >= 1 && teGenuineCount === 0));
+};
+
 export const detectTrueLanguage = (text) => {
   if (!text || !text.trim()) return 'en';
   const clean = text.trim();
@@ -223,27 +250,7 @@ export const detectTrueLanguage = (text) => {
 
   // If Telugu script is detected: accurately distinguish genuine Telugu from phonetic English/Hindi loanwords
   if (hasTelugu) {
-    const teluguPhoneticEnglish = [
-      'హాయ్', 'హలో', 'మై', 'నేమ్', 'ఈజ్', 'ఇస్', 'ఐ', 'వాంట్', 'టు', 'గో', 'హోమ్',
-      'ఆపరేట్', 'ఆన్', 'న్యూమరికల్', 'డాటా', 'డేటా', 'నాట్', 'రా', 'టెక్స్ట్', 'బికాజ్',
-      'టైర్డ్', 'ప్లీజ్', 'థాంక్స్', 'థాంక్యూ', 'ఎస్', 'నో', 'వెల్కమ్', 'గుడ్', 'మార్నింగ్',
-      'ఈవెనింగ్', 'నైట్', 'వెల్', 'డన్', 'కాల్', 'మీ', 'వర్క్', 'జాబ్', 'కంప్యూటర్',
-      'లీవ్', 'లివ్', 'ఇన్', 'హైదరాబాద్', 'హియర్', 'దేర్', 'ఫ్రమ్', 'వైష్ణవి', 'రాజ్'
-    ];
-    const teluguGenuine = [
-      'పేరు', 'నేను', 'ఎలా', 'ఉన్నారు', 'ఉన్నాను', 'బాగున్నారా', 'చాలా',
-      'ఇంటికి', 'వెళ్ళాలి', 'అండి', 'ధన్యవాదాలు', 'సహాయం', 'కావాలి', 'లేదు',
-      'మీరు', 'ఏంటి', 'ఎక్కడ', 'ఎప్పుడు', 'బాగుంది'
-    ];
-    const tokens = clean.split(/\s+/);
-    let engCount = 0;
-    let teGenuineCount = 0;
-    for (const t of tokens) {
-      if (teluguPhoneticEnglish.some(pw => t.includes(pw))) engCount++;
-      if (teluguGenuine.some(gw => t.includes(gw))) teGenuineCount++;
-    }
-    // If predominantly phonetic English loanwords and not genuine Telugu sentence, actual spoken language was English
-    if (engCount > teGenuineCount || (engCount >= 1 && teGenuineCount === 0)) {
+    if (isPhoneticEnglishInTelugu(clean)) {
       return 'en';
     }
     return 'te';
@@ -1365,7 +1372,9 @@ export default function App() {
     // 🛡️ CRITICAL PHONETIC RESTORATION:
     // If user spoke English, but legacy or client ASR produced Telugu phonetics (e.g. "మై నేమ్ ఇస్ వైష్ణవి..."):
     // Automatically translate the phonetic text back into pure English so "YOU SAID" shows clean English!
-    if (detectedSpokenLang === 'en' && /[\u0C00-\u0C7F]/.test(cleanSpokenText)) {
+    if ((detectedSpokenLang === 'en' || isPhoneticEnglishInTelugu(cleanSpokenText)) && /[\u0C00-\u0C7F]/.test(cleanSpokenText)) {
+      detectedSpokenLang = 'en';
+      detectedNameVal = 'English';
       try {
         const restored = await performRobustTranslation(cleanSpokenText, 'te', 'en');
         if (restored && restored.translated_text && !restored.translated_text.startsWith("Translation service")) {
@@ -1374,6 +1383,17 @@ export default function App() {
         }
       } catch (e) {
         console.warn("Phonetic restoration notice:", e);
+      }
+      if (/[\u0C00-\u0C7F]/.test(cleanSpokenText)) {
+        try {
+          const gtxResp = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=te&tl=en&dt=t&q=${encodeURIComponent(cleanSpokenText)}`);
+          if (gtxResp.ok) {
+            const gtxData = await gtxResp.json();
+            if (gtxData && gtxData[0] && gtxData[0][0] && gtxData[0][0][0]) {
+              cleanSpokenText = gtxData[0][0][0].trim();
+            }
+          }
+        } catch (e) {}
       }
     }
 
@@ -1599,7 +1619,9 @@ export default function App() {
 
     // 🛡️ CRITICAL SCRIPT RECONCILIATION & PHONETIC RESTORATION (Foolproof True Detection)
     // 1. Spoke English, but transcript arrived in Telugu script (e.g. "మై నేమ్ ఇస్ వైష్ణవి..."):
-    if (resolvedDetectedCode === 'en' && /[\u0C00-\u0C7F]/.test(finalPhrase)) {
+    if ((resolvedDetectedCode === 'en' || isPhoneticEnglishInTelugu(finalPhrase)) && /[\u0C00-\u0C7F]/.test(finalPhrase)) {
+      resolvedDetectedCode = 'en';
+      resolvedDetectedName = 'English';
       try {
         const restored = await performRobustTranslation(finalPhrase, 'te', 'en');
         if (restored && restored.translated_text && !restored.translated_text.startsWith("Translation service")) {
@@ -1608,6 +1630,18 @@ export default function App() {
         }
       } catch (e) {
         console.warn("English restoration notice:", e);
+      }
+      // Instant direct fallback to guarantee English text
+      if (/[\u0C00-\u0C7F]/.test(finalPhrase)) {
+        try {
+          const gtxResp = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=te&tl=en&dt=t&q=${encodeURIComponent(finalPhrase)}`);
+          if (gtxResp.ok) {
+            const gtxData = await gtxResp.json();
+            if (gtxData && gtxData[0] && gtxData[0][0] && gtxData[0][0][0]) {
+              finalPhrase = gtxData[0][0][0].trim();
+            }
+          }
+        } catch (e) {}
       }
     }
 
@@ -1748,7 +1782,11 @@ export default function App() {
 
       // Real-time live transcript preview in UI
       if (sourceLang === 'auto') {
-        setLiveInterimText(fullUtterance ? `Hearing: "${fullUtterance}..."` : "Listening... (Detecting language)");
+        if (isPhoneticEnglishInTelugu(fullUtterance)) {
+          setLiveInterimText("Listening... (English speech detected)");
+        } else {
+          setLiveInterimText(fullUtterance ? `Hearing: "${fullUtterance}..."` : "Listening... (Detecting language)");
+        }
       } else {
         setInputText(fullUtterance);
         setLiveInterimText(fullUtterance);
@@ -2847,15 +2885,9 @@ export default function App() {
                     <div className="flex items-center justify-between text-xs text-slate-400 mb-1.5">
                       <span className="font-extrabold uppercase tracking-wide text-blue-400 flex items-center gap-1.5">
                         <Mic className="w-3.5 h-3.5" /> YOU SAID ({
-                          (detectedLangName && detectedLangName !== 'Auto Detect')
-                            ? detectedLangName.toUpperCase()
-                            : (detectedCode && detectedCode !== 'auto')
-                            ? (LANGUAGES[detectedCode] || detectedCode).toUpperCase()
-                            : (sourceLang !== 'auto')
-                            ? (LANGUAGES[sourceLang] || sourceLang).toUpperCase()
-                            : isListening
-                            ? 'LISTENING...'
-                            : 'ENGLISH'
+                          sourceLang === 'auto'
+                            ? 'AUTO DETECT'
+                            : (LANGUAGES[sourceLang] || sourceLang).toUpperCase()
                         })
                       </span>
                       {detectedCode && detectedCode !== 'auto' && (
