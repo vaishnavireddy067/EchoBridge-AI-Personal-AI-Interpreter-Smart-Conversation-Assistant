@@ -255,10 +255,10 @@ export default function App() {
   // Page 1: Splash (showSplash = true for 2.0s, NO button, auto-transitions)
   // Page 2: Main Standalone Live Translator (currentStage = 'translator')
   // Page 3: Full Bhashora AI Workspace with Sidebar (currentStage = 'workspace')
-  const [currentStage, setCurrentStage] = useState('translator');
+  const [currentStage, setCurrentStage] = useState('workspace');
   const [showSplash, setShowSplash] = useState(true);
   const [activeNav, setActiveNav] = useState('live-interpreter');
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // Page 1 Splash Screen: 2-second automatic transition to Page 2
   useEffect(() => {
@@ -438,13 +438,33 @@ export default function App() {
   const [convInputA, setConvInputA] = useState('');
   const [convInputB, setConvInputB] = useState('');
 
-  // User Profile
-  const [userProfile] = useState({
-    name: 'John Doe',
-    email: 'john@example.com',
-    plan: 'Pro Member',
-    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop&crop=face'
+  // User Profile & Authentication Credentials State
+  const [userProfile, setUserProfile] = useState(() => {
+    try {
+      const saved = localStorage.getItem('bhashora_user_profile');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return {
+      name: 'Vaishnavi Anugu',
+      email: 'vaishnavi@example.com',
+      plan: 'Pro Member',
+      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop&crop=face'
+    };
   });
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [editProfileName, setEditProfileName] = useState(userProfile.name);
+  const [editProfileEmail, setEditProfileEmail] = useState(userProfile.email);
+  const [editProfilePassword, setEditProfilePassword] = useState('');
+  const [editProfileApiKey, setEditProfileApiKey] = useState('');
+
+  // Top Navbar Notifications State
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [hasUnreadNotifs, setHasUnreadNotifs] = useState(true);
+
+  // Pronunciation Practice Coach State
+  const [practiceLang, setPracticeLang] = useState('ta');
+  const [practicePhrase, setPracticePhrase] = useState('మీరు ఎలా ఉన్నారు?');
+  const [practiceSpeed, setPracticeSpeed] = useState(1.0);
 
   const recognitionRef = useRef(null);
   const speakerRecognitionRef = useRef(null);
@@ -1156,7 +1176,8 @@ export default function App() {
       // Release lock so next speech turn can proceed cleanly
       isProcessingVoiceRef.current = false;
 
-      // 🧹 Clear the input field and interim transcript so the screen is clean and ready for the next sentence!
+      // 🧹 AUTOMATICALLY CLEAR THE TEXT: After Bhashora speaks, clear the input field and interim speech!
+      // The user will never need to clear manually.
       setInputText('');
       setLiveInterimText('');
       accumulatedSpeechRef.current = '';
@@ -1165,26 +1186,20 @@ export default function App() {
       utteranceBufferRef.current = '';
       sessionFinalRef.current = '';
 
-      if (isLiveActiveRef.current) {
-        // Automatically alternate speaker turn for continuous 2-way conversation!
-        if (twoWayAutoSwitchRef.current) {
-          const nextTurn = (turn === 'A' ? 'B' : 'A');
-          currentSpeakerTurnRef.current = nextTurn;
-          setCurrentSpeakerTurn(nextTurn);
-        }
+      // 🛑 STOP LISTENING & BECOME READY: Do not stay listening indefinitely.
+      // Ready to wait for the next sentence when the user clicks the microphone button again!
+      setIsLiveActive(false);
+      isLiveActiveRef.current = false;
+      setIsListening(false);
+      setSpeakerState('idle');
+      liveStatusRef.current = 'idle';
 
-        setSpeakerState('listening');
-        liveStatusRef.current = 'listening';
-
-        // ⏳ 400ms silence delay so microphone does NOT hear the device's own audio
-        setTimeout(() => {
-          if (isLiveActiveRef.current && !isProcessingVoiceRef.current && startLiveTurnRef.current) {
-            startLiveTurnRef.current();
-          }
-        }, 400);
-      } else {
-        setSpeakerState('idle');
-        liveStatusRef.current = 'idle';
+      if (liveRecognitionRef.current) {
+        try {
+          liveRecognitionRef.current.stop();
+          liveRecognitionRef.current.abort();
+        } catch (e) {}
+        liveRecognitionRef.current = null;
       }
     });
   }, [sourceLang, targetLang, speakerInputLang, speakerTargetLang, selectedScenario, speakTranslatedSentence]);
@@ -1626,6 +1641,11 @@ export default function App() {
     if (isLiveActive) {
       stopLiveInterpretation();
     } else {
+      // 🧹 Automatically clear previous sentence so screen is fresh and clean!
+      setInputText('');
+      setLiveInterimText('');
+      setSpeechInterim('');
+      accumulatedSpeechRef.current = '';
       isProcessingVoiceRef.current = false;
       lastSubmittedPhraseRef.current = '';
       lastSubmitTimeRef.current = 0;
@@ -2692,7 +2712,9 @@ export default function App() {
           {/* ========================================================= */}
           {/* 🧭 LEFT SIDEBAR DRAWER */}
           {/* ========================================================= */}
-          <aside className={`fixed md:static inset-y-0 left-0 w-72 shrink-0 bg-[#0a0f1e] border-r border-slate-800/80 flex flex-col justify-between p-4 z-40 transition-transform duration-300 ${sidebarOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full md:translate-x-0'}`}>
+          <aside className={`fixed md:static inset-y-0 left-0 shrink-0 bg-[#0a0f1e] border-r border-slate-800/80 flex flex-col justify-between p-4 z-40 transition-all duration-300 ${sidebarOpen ? 'w-72 translate-x-0 opacity-100 shadow-2xl' : 'w-0 -translate-x-full md:w-0 md:opacity-0 md:p-0 md:border-0 pointer-events-none overflow-hidden'}`}>
+        {/* Sidebar content container (maintains fixed width so text doesn't squish) */}
+        <div className="w-64 flex flex-col justify-between h-full">
         
         {/* Brand & Logo */}
         <div>
@@ -2719,11 +2741,11 @@ export default function App() {
           {/* Grouped Nav Items */}
           <nav className="space-y-1 overflow-y-auto max-h-[calc(100vh-280px)] pr-1">
             <SidebarBtn 
-              active={activeNav === 'live-interpreter' || activeNav === 'speak-translate'} 
+              active={activeNav === 'live-interpreter'} 
               icon={<Radio className="w-4 h-4 text-rose-400 animate-pulse" />} 
               label="Live Conversation" 
               badge="HERO ⭐"
-              onClick={() => { setActiveNav('live-interpreter'); setSidebarOpen(false); }}
+              onClick={() => { setActiveNav('live-interpreter'); setActiveMode('talk'); setSidebarOpen(false); }}
             />
             <SidebarBtn 
               active={activeNav === 'translator'} 
@@ -2737,41 +2759,38 @@ export default function App() {
               label="Speak & Translate" 
               onClick={() => { setActiveNav('conversation'); setSidebarOpen(false); }}
             />
+            <SidebarBtn 
+              active={activeNav === 'learn'} 
+              icon={<BookOpen className="w-4 h-4 text-pink-400" />} 
+              label="Learn & Practice" 
+              badge="MODE 2"
+              onClick={() => { setActiveNav('learn'); setActiveMode('learn'); setSidebarOpen(false); }}
+            />
 
             <div className="pt-3 pb-1 px-3 text-[10px] uppercase font-bold text-slate-500 tracking-wider">
               Smart AI Features
             </div>
 
             <SidebarBtn 
-              active={false} 
+              active={activeNav === 'smart-replies'} 
               icon={<Sparkles className="w-4 h-4 text-purple-400" />} 
               label="Smart Replies" 
-              badge="Active"
-              onClick={() => { 
-                setActiveNav('live-interpreter'); 
-                setSidebarOpen(false);
-                showToast("Smart Replies are active right below conversation turns!");
-              }}
+              badge="AI"
+              onClick={() => { setActiveNav('smart-replies'); setSidebarOpen(false); }}
             />
             <SidebarBtn 
-              active={false} 
+              active={activeNav === 'scenarios'} 
               icon={<Layers className="w-4 h-4 text-blue-400" />} 
-              label="Scenario Mode" 
+              label="Scenario Presets" 
               badge={selectedScenario.toUpperCase()}
-              onClick={() => { 
-                setActiveNav('live-interpreter'); 
-                setSidebarOpen(false);
-                showToast(`Current Scenario: ${selectedScenario}`);
-              }}
+              onClick={() => { setActiveNav('scenarios'); setSidebarOpen(false); }}
             />
             <SidebarBtn 
-              active={false} 
+              active={activeNav === 'pronunciation'} 
               icon={<Mic className="w-4 h-4 text-emerald-400" />} 
               label="Pronunciation Coach" 
-              onClick={() => { 
-                setSidebarOpen(false);
-                handlePracticePronunciation();
-              }}
+              badge="Coach"
+              onClick={() => { setActiveNav('pronunciation'); setSidebarOpen(false); }}
             />
 
             <div className="pt-3 pb-1 px-3 text-[10px] uppercase font-bold text-slate-500 tracking-wider">
@@ -2780,21 +2799,21 @@ export default function App() {
 
             <SidebarBtn 
               active={activeNav === 'history'} 
-              icon={<Clock className="w-4 h-4" />} 
+              icon={<Clock className="w-4 h-4 text-blue-400" />} 
               label="History" 
               badge={history.length}
               onClick={() => { setActiveNav('history'); setSidebarOpen(false); }}
             />
             <SidebarBtn 
               active={activeNav === 'favorites'} 
-              icon={<Heart className="w-4 h-4" />} 
+              icon={<Heart className="w-4 h-4 text-rose-400" />} 
               label="Favorites" 
               badge={favoritesList.length}
               onClick={() => { setActiveNav('favorites'); setSidebarOpen(false); }}
             />
             <SidebarBtn 
               active={activeNav === 'analytics'} 
-              icon={<BarChart3 className="w-4 h-4" />} 
+              icon={<BarChart3 className="w-4 h-4 text-cyan-400" />} 
               label="Analytics" 
               onClick={() => { setActiveNav('analytics'); setSidebarOpen(false); }}
             />
@@ -2818,7 +2837,7 @@ export default function App() {
             />
             <SidebarBtn 
               active={activeNav === 'settings'} 
-              icon={<Settings className="w-4 h-4" />} 
+              icon={<Settings className="w-4 h-4 text-slate-400" />} 
               label="Settings" 
               onClick={() => { setActiveNav('settings'); setSidebarOpen(false); }}
             />
@@ -2845,26 +2864,39 @@ export default function App() {
           </div>
 
           <div className="flex items-center justify-between px-1">
-            <div className="flex items-center gap-2.5">
+            <div 
+              onClick={() => {
+                setEditProfileName(userProfile.name);
+                setEditProfileEmail(userProfile.email);
+                setShowAuthModal(true);
+              }}
+              className="flex items-center gap-2.5 cursor-pointer hover:bg-slate-800/60 p-1.5 -ml-1 rounded-xl transition-all group flex-1 mr-1"
+              title="Click to view and change login credentials & profile"
+            >
               <img 
                 src={userProfile.avatar} 
                 alt="User" 
-                className="w-8 h-8 rounded-full ring-2 ring-indigo-500/40 object-cover" 
+                className="w-8 h-8 rounded-full ring-2 ring-indigo-500/40 object-cover group-hover:ring-indigo-400" 
               />
               <div className="min-w-0">
-                <div className="text-xs font-bold text-slate-200 truncate">{userProfile.name}</div>
+                <div className="text-xs font-bold text-slate-200 truncate group-hover:text-indigo-300 transition-colors">{userProfile.name}</div>
                 <div className="text-[10px] text-slate-400 truncate">{userProfile.email}</div>
               </div>
             </div>
             <button 
-              title="Logout" 
-              onClick={() => showToast("Logged in as John Doe (Active User)")}
+              title="Account & Login Credentials" 
+              onClick={() => {
+                setEditProfileName(userProfile.name);
+                setEditProfileEmail(userProfile.email);
+                setShowAuthModal(true);
+              }}
               className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
             >
               <LogOut className="w-4 h-4" />
             </button>
           </div>
 
+        </div>
         </div>
       </aside>
 
@@ -2886,12 +2918,12 @@ export default function App() {
             </button>
 
             <button 
-              onClick={() => setSidebarOpen(!sidebarOpen)}
-              className="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-700/70 transition-all cursor-pointer flex items-center gap-1.5 shadow-sm active:scale-95"
-              title="Toggle Menu / All Tools"
+              onClick={() => setSidebarOpen(prev => !prev)}
+              className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 hover:border-cyan-500/50 transition-all cursor-pointer flex items-center gap-2 shadow-sm active:scale-95"
+              title="Toggle Left Navigation Sidebar"
             >
               <Menu className="w-4 h-4 text-cyan-400" />
-              <span className="hidden sm:inline text-xs font-bold text-slate-300">Menu</span>
+              <span className="text-xs font-bold text-slate-200">Menu</span>
             </button>
 
             <div className="hidden lg:flex items-center gap-2 px-3 py-1 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-xs">
@@ -2950,22 +2982,99 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+            {/* Theme Toggle Button */}
             <button 
-              onClick={() => setDarkMode(!darkMode)}
-              className="p-2 rounded-xl bg-slate-800/70 border border-slate-700/60 text-slate-300 hover:text-white transition-colors cursor-pointer"
-              title="Toggle Theme"
+              onClick={() => {
+                const next = !darkMode;
+                setDarkMode(next);
+                showToast(next ? "Switched to Dark Cyber Theme 🌙" : "Switched to High-Contrast Light Theme ☀️");
+              }}
+              className="p-2 rounded-xl bg-slate-800/70 hover:bg-slate-700 border border-slate-700/60 text-slate-300 hover:text-white transition-all cursor-pointer active:scale-95"
+              title={darkMode ? "Switch to Light Theme" : "Switch to Dark Theme"}
             >
-              {darkMode ? <Sun className="w-4 h-4 text-amber-300" /> : <Moon className="w-4 h-4 text-slate-300" />}
+              {darkMode ? <Sun className="w-4 h-4 text-amber-300" /> : <Moon className="w-4 h-4 text-cyan-300" />}
             </button>
-            <button 
-              onClick={() => showToast("Bhashora AI status: All systems operational")}
-              className="relative p-2 rounded-xl bg-slate-800/70 border border-slate-700/60 text-slate-300 hover:text-white transition-colors cursor-pointer"
-              title="Notifications"
-            >
-              <Bell className="w-4 h-4" />
-              <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500" />
-            </button>
+
+            {/* Notifications Button & Dropdown */}
+            <div className="relative">
+              <button 
+                onClick={() => setShowNotifications(prev => !prev)}
+                className="relative p-2 rounded-xl bg-slate-800/70 hover:bg-slate-700 border border-slate-700/60 text-slate-300 hover:text-white transition-all cursor-pointer active:scale-95"
+                title="Notifications & System Alerts"
+              >
+                <Bell className="w-4 h-4" />
+                {hasUnreadNotifs && (
+                  <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 rounded-full bg-rose-500 ring-2 ring-slate-900 animate-pulse" />
+                )}
+              </button>
+
+              {showNotifications && (
+                <div className="absolute right-0 mt-2 w-80 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-4 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
+                  <div className="flex items-center justify-between pb-2.5 border-b border-slate-800">
+                    <div className="flex items-center gap-2">
+                      <Bell className="w-4 h-4 text-indigo-400" />
+                      <span className="text-xs font-bold text-white">System Notifications</span>
+                    </div>
+                    {hasUnreadNotifs && (
+                      <button
+                        onClick={() => {
+                          setHasUnreadNotifs(false);
+                          showToast("All notifications marked as read");
+                        }}
+                        className="text-[10px] text-cyan-400 hover:underline cursor-pointer"
+                      >
+                        Mark all read
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="py-2 space-y-2.5 max-h-64 overflow-y-auto">
+                    <div className="p-2.5 bg-slate-950/70 rounded-xl border border-slate-800/80 space-y-1">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="font-bold text-emerald-400 flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                          Speech Pipeline Active
+                        </span>
+                        <span className="text-[10px] text-slate-500">Live</span>
+                      </div>
+                      <p className="text-[11px] text-slate-300">Telugu, Tamil, Kannada, Hindi, and English live interpretation engine ready.</p>
+                    </div>
+
+                    <div className="p-2.5 bg-slate-950/70 rounded-xl border border-slate-800/80 space-y-1">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="font-bold text-cyan-400 flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+                          Sub-Second Latency
+                        </span>
+                        <span className="text-[10px] text-slate-500">2m ago</span>
+                      </div>
+                      <p className="text-[11px] text-slate-300">FastAPI & Neural Translation cluster operating at &lt; 35ms response time.</p>
+                    </div>
+
+                    <div className="p-2.5 bg-slate-950/70 rounded-xl border border-slate-800/80 space-y-1">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="font-bold text-amber-400 flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                          Zero-Network Ready
+                        </span>
+                        <span className="text-[10px] text-slate-500">5m ago</span>
+                      </div>
+                      <p className="text-[11px] text-slate-300">6 preloaded offline phrase packs cached for zero-connectivity environments.</p>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-800 flex justify-end">
+                    <button
+                      onClick={() => setShowNotifications(false)}
+                      className="px-3 py-1 rounded-lg bg-slate-800 text-[11px] font-semibold text-slate-300 hover:text-white transition-colors"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -4100,6 +4209,213 @@ export default function App() {
         {/* ========================================================= */}
         {/* VIEW 2: TRANSLATION HISTORY */}
         {/* ========================================================= */}
+                {/* ========================================================= */}
+        {/* VIEW: 🎯 PRONUNCIATION PRACTICE COACH                     */}
+        {/* ========================================================= */}
+        {activeNav === 'pronunciation' && (
+          <div className="p-6 md:p-8 max-w-4xl mx-auto w-full flex-1 flex flex-col space-y-6 animate-in fade-in duration-200">
+            {/* Header */}
+            <div className="text-center space-y-2">
+              <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-semibold">
+                <Mic className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+                AI Acoustic Pronunciation Coach 🎯
+              </div>
+              <h2 className="text-3xl md:text-4xl font-extrabold text-white tracking-tight">
+                Pronunciation Practice Coach
+              </h2>
+              <p className="text-slate-400 text-xs md:text-sm max-w-xl mx-auto">
+                Listen to native cadence, speak into the mic, and get instant phonetic accuracy scoring and coaching feedback.
+              </p>
+            </div>
+
+            {/* Language & Phrase Selection Card */}
+            <div className="bg-slate-900/90 border border-slate-800 p-5 rounded-3xl shadow-xl space-y-4">
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <span className="text-xs font-bold text-slate-400 uppercase tracking-wider shrink-0 flex items-center gap-1">
+                    <Globe className="w-3.5 h-3.5 text-indigo-400" /> Target Language:
+                  </span>
+                  <select
+                    value={practiceLang}
+                    onChange={(e) => {
+                      const l = e.target.value;
+                      setPracticeLang(l);
+                      const defaults = {
+                        te: 'మీరు ఎలా ఉన్నారు?',
+                        ta: 'நீங்கள் எப்படி இருக்கிறீர்கள்?',
+                        kn: 'ನೀವು ಹೇಗಿದ್ದೀರಿ?',
+                        hi: 'आप कैसे हैं?',
+                        en: 'How are you today?',
+                        ml: 'സുഖമാണോ?',
+                        mr: 'तुम्ही कसे आहात?'
+                      };
+                      if (defaults[l]) setPracticePhrase(defaults[l]);
+                    }}
+                    className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs font-bold text-white focus:outline-none cursor-pointer"
+                  >
+                    {Object.entries(SPEECH_LANGS).map(([code, info]) => (
+                      <option key={code} value={code} className="bg-slate-900 text-white">
+                        {info.flag} {info.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Speed Toggle for Listening */}
+                <div className="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1 rounded-xl border border-slate-800 text-xs">
+                  <span className="text-slate-500 font-medium">Listening Speed:</span>
+                  <button
+                    onClick={() => setPracticeSpeed(1.0)}
+                    className={`px-2 py-0.5 rounded font-semibold text-xs transition-colors ${practiceSpeed === 1.0 ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                  >
+                    1.0x Normal
+                  </button>
+                  <button
+                    onClick={() => setPracticeSpeed(0.8)}
+                    className={`px-2 py-0.5 rounded font-semibold text-xs transition-colors ${practiceSpeed === 0.8 ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                  >
+                    0.8x Slow
+                  </button>
+                </div>
+              </div>
+
+              {/* Phrase to Practice Input */}
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-slate-400 uppercase">Phrase to Practice</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={practicePhrase}
+                    onChange={(e) => setPracticePhrase(e.target.value)}
+                    placeholder="Type or select a phrase to practice..."
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-2xl py-3 px-4 text-base font-semibold text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/50"
+                  />
+                  <button
+                    onClick={() => speakTranslatedSentence(practicePhrase, practiceLang)}
+                    disabled={!practicePhrase.trim()}
+                    className="px-4 py-3 rounded-2xl bg-indigo-600/30 hover:bg-indigo-600/50 border border-indigo-500/40 text-indigo-300 font-bold text-xs flex items-center gap-2 cursor-pointer transition-all active:scale-95 disabled:opacity-40"
+                    title="Listen to native audio"
+                  >
+                    <Volume2 className="w-4 h-4 text-indigo-400" />
+                    <span>Listen</span>
+                  </button>
+                </div>
+
+                {/* Quick Phrases Pills */}
+                <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                  <span className="text-[11px] text-slate-500 font-semibold">Quick picks:</span>
+                  {[
+                    practiceLang === 'te' ? "మీరు ఎలా ఉన్నారు?" :
+                    practiceLang === 'ta' ? "நீங்கள் எப்படி இருக்கிறீர்கள்?" :
+                    practiceLang === 'kn' ? "ನೀವು ಹೇಗಿದ್ದೀರಿ?" :
+                    practiceLang === 'hi' ? "आप कैसे हैं?" : "How are you?",
+
+                    practiceLang === 'te' ? "నాకు సహాయం కావాలి" :
+                    practiceLang === 'ta' ? "எனக்கு உதவி தேவை" :
+                    practiceLang === 'kn' ? "ನನಗೆ ಸಹಾಯ ಬೇಕು" :
+                    practiceLang === 'hi' ? "मुझे मदद चाहिए" : "I need help",
+
+                    practiceLang === 'te' ? "చాలా ధన్యవాదాలు" :
+                    practiceLang === 'ta' ? "மிக்க நன்றி" :
+                    practiceLang === 'kn' ? "ತುಂಬಾ ಧನ್ಯವಾದಗಳು" :
+                    practiceLang === 'hi' ? "बहुत बहुत धन्यवाद" : "Thank you very much"
+                  ].map((p, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => setPracticePhrase(p)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-xs font-medium text-emerald-300 border border-slate-700 transition-colors cursor-pointer"
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Interactive Recording Card */}
+            <div className="bg-slate-900/90 border border-slate-800 p-8 rounded-3xl shadow-xl flex flex-col items-center text-center space-y-4">
+              <p className="text-xs uppercase font-bold text-slate-400 tracking-wider">
+                Step 2: Repeat & Record into Microphone
+              </p>
+
+              <button
+                onClick={() => handlePracticePronunciation(practicePhrase, practiceLang)}
+                disabled={isPronouncing || !practicePhrase.trim()}
+                className={`w-24 h-24 rounded-full flex items-center justify-center transition-all duration-300 shadow-2xl cursor-pointer active:scale-95 ${
+                  isPronouncing 
+                    ? 'bg-rose-600 ring-4 ring-rose-400/50 animate-pulse text-white shadow-rose-600/50' 
+                    : 'bg-gradient-to-tr from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white shadow-emerald-600/30 hover:scale-105'
+                }`}
+              >
+                <Mic className={`w-10 h-10 ${isPronouncing ? 'animate-bounce' : ''}`} />
+              </button>
+
+              <div>
+                <p className="text-sm font-bold text-white">
+                  {isPronouncing ? "🎤 Listening to your pronunciation... Speak now!" : "Tap microphone and speak clearly"}
+                </p>
+                <p className="text-xs text-slate-500 mt-1">
+                  Expected in: <strong className="text-slate-300">{LANGUAGES[practiceLang]}</strong>
+                </p>
+              </div>
+
+              {/* Evaluation Results Card */}
+              {pronounceResult && (
+                <div className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl p-5 mt-4 space-y-4 text-left animate-in fade-in duration-200">
+                  <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Accuracy Score</span>
+                      <div className="text-3xl font-black text-transparent bg-gradient-to-r from-emerald-400 to-teal-300 bg-clip-text">
+                        {pronounceResult.score}%
+                      </div>
+                    </div>
+                    <span className={`px-3 py-1 rounded-full text-xs font-bold border ${
+                      pronounceResult.score >= 80 
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' 
+                        : pronounceResult.score >= 60 
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' 
+                        : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
+                    }`}>
+                      {pronounceResult.grade || (pronounceResult.score >= 80 ? 'Excellent ⭐⭐⭐' : 'Good ⭐⭐')}
+                    </span>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <span className="text-[11px] font-bold text-slate-400 uppercase">You Said:</span>
+                    <p className="text-base font-bold text-slate-200 pl-3 border-l-2 border-emerald-500">
+                      "{pronounceResult.attempt}"
+                    </p>
+                  </div>
+
+                  {pronounceResult.matched_words && pronounceResult.matched_words.length > 0 && (
+                    <div className="space-y-1.5">
+                      <span className="text-[11px] font-bold text-slate-400 uppercase">Word Breakdown:</span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {pronounceResult.matched_words.map((w, idx) => (
+                          <span
+                            key={idx}
+                            className={`px-2 py-0.5 rounded-lg text-xs font-medium border ${
+                              w.status === 'correct' 
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' 
+                                : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                            }`}
+                          >
+                            {w.status === 'correct' ? '✓ ' : '✗ '}{w.word}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="p-3 bg-indigo-950/40 border border-indigo-500/20 rounded-xl text-xs text-indigo-200">
+                    💡 <strong className="text-indigo-300 font-semibold">Coach Advice:</strong> {pronounceResult.feedback}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {activeNav === 'history' && (
           <div className="p-8 max-w-5xl mx-auto w-full space-y-6 animate-in fade-in duration-200">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
@@ -4290,39 +4606,67 @@ export default function App() {
             </div>
 
             {documentResult && (
-              <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
-                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 md:p-8 shadow-2xl space-y-5 animate-in fade-in duration-200">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
                   <div>
-                    <h4 className="font-bold text-sm text-slate-100 flex items-center gap-2">
-                      <FileCheck className="w-4 h-4 text-emerald-400" />
+                    <h4 className="font-bold text-base text-slate-100 flex items-center gap-2">
+                      <FileCheck className="w-5 h-5 text-emerald-400" />
                       {documentResult.filename}
                     </h4>
-                    <span className="text-[11px] text-slate-400">{documentResult.total_paragraphs} paragraphs translated into {LANGUAGES[targetLang]}</span>
+                    <span className="text-xs text-slate-400">
+                      {documentResult.total_paragraphs} paragraphs translated into <strong className="text-emerald-400 font-semibold">{LANGUAGES[targetLang] || targetLang}</strong>
+                    </span>
                   </div>
-                  <button 
-                    onClick={() => {
-                      const blob = new Blob([documentResult.full_translated_text], { type: 'text/plain;charset=utf-8' });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement('a');
-                      a.href = url;
-                      a.download = `translated-${documentResult.filename}.txt`;
-                      a.click();
-                      URL.revokeObjectURL(url);
-                      showToast("Downloaded translated document");
-                    }}
-                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center gap-2"
-                  >
-                    <Download className="w-4 h-4" /> Download Translated (.txt)
-                  </button>
+
+                  {/* Document Actions: Copy Everything in One Box + Download */}
+                  <div className="flex items-center gap-2.5">
+                    <button 
+                      onClick={() => {
+                        const allText = documentResult.full_translated_text || documentResult.paragraphs?.map(p => p.translated).join('\n\n') || '';
+                        handleCopy(allText, 'doc_all');
+                        showToast("Entire translated document copied to clipboard! 📋");
+                      }}
+                      className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-indigo-600/30 transition-all cursor-pointer active:scale-95"
+                      title="Copy entire translated document in one click"
+                    >
+                      {copiedId === 'doc_all' ? <Check className="w-4 h-4 text-emerald-300" /> : <Copy className="w-4 h-4" />}
+                      <span>{copiedId === 'doc_all' ? 'Copied Everything!' : 'Copy Everything'}</span>
+                    </button>
+
+                    <button 
+                      onClick={() => {
+                        const allText = documentResult.full_translated_text || documentResult.paragraphs?.map(p => p.translated).join('\n\n') || '';
+                        const blob = new Blob([allText], { type: 'text/plain;charset=utf-8' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `translated-${documentResult.filename}.txt`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                        showToast("Downloaded translated document");
+                      }}
+                      className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold text-xs flex items-center gap-2 transition-all cursor-pointer"
+                    >
+                      <Download className="w-4 h-4 text-emerald-400" /> 
+                      <span>Download (.txt)</span>
+                    </button>
+                  </div>
                 </div>
 
-                <div className="space-y-3 max-h-96 overflow-y-auto pr-2">
-                  {documentResult.paragraphs?.map((para, idx) => (
-                    <div key={idx} className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-slate-950 p-3 rounded-xl border border-slate-800/80 text-xs">
-                      <div className="text-slate-400">{para.original}</div>
-                      <div className="text-emerald-300 font-medium">{para.translated}</div>
-                    </div>
-                  ))}
+                {/* SINGLE UNIFIED DOCUMENT READING BOX (One box, no separate paragraph boxes) */}
+                <div className="bg-slate-950/90 border border-slate-800/90 rounded-2xl p-6 min-h-[320px] max-h-[560px] overflow-y-auto shadow-inner space-y-3">
+                  <div className="flex items-center justify-between text-xs text-slate-400 pb-2 border-b border-slate-800/70">
+                    <span className="font-bold text-emerald-400 flex items-center gap-1.5">
+                      <FileText className="w-3.5 h-3.5" /> Complete Translated Text
+                    </span>
+                    <span className="text-[11px] text-slate-500">
+                      {(documentResult.full_translated_text || '').length} characters • Ready to read or copy
+                    </span>
+                  </div>
+
+                  <div className="text-slate-100 text-sm md:text-base leading-relaxed whitespace-pre-line select-text font-sans pr-2">
+                    {documentResult.full_translated_text || documentResult.paragraphs?.map(p => p.translated).join('\n\n')}
+                  </div>
                 </div>
               </div>
             )}
@@ -4790,6 +5134,109 @@ export default function App() {
         )}
 
         {/* 📄 BILINGUAL CONVERSATION TRANSCRIPT MODAL */}
+                {/* 🔐 ACCOUNT & LOGIN CREDENTIALS MODAL */}
+        {showAuthModal && (
+          <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 md:p-8 max-w-md w-full relative shadow-2xl space-y-6">
+              <button 
+                onClick={() => setShowAuthModal(false)}
+                className="absolute top-4 right-4 p-2 text-slate-400 hover:text-white rounded-full hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <div className="flex items-center gap-3.5">
+                <img 
+                  src={userProfile.avatar} 
+                  alt="Avatar" 
+                  className="w-14 h-14 rounded-2xl ring-2 ring-indigo-500/40 object-cover shadow-lg" 
+                />
+                <div>
+                  <h3 className="text-lg font-bold text-white">Account & Credentials</h3>
+                  <p className="text-xs text-slate-400">Update login and profile settings</p>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold uppercase text-slate-400 mb-1.5">Full Name</label>
+                  <input 
+                    type="text" 
+                    value={editProfileName}
+                    onChange={(e) => setEditProfileName(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 transition-all"
+                    placeholder="Your Name (e.g. Vaishnavi Anugu)"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase text-slate-400 mb-1.5">Email Address</label>
+                  <input 
+                    type="email" 
+                    value={editProfileEmail}
+                    onChange={(e) => setEditProfileEmail(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 transition-all"
+                    placeholder="your.email@example.com"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase text-slate-400 mb-1.5">Password / New Passcode</label>
+                  <input 
+                    type="password" 
+                    value={editProfilePassword}
+                    onChange={(e) => setEditProfilePassword(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 transition-all"
+                    placeholder="••••••••••••"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 pt-2">
+                <button
+                  onClick={() => {
+                    const updated = {
+                      ...userProfile,
+                      name: editProfileName.trim() || userProfile.name,
+                      email: editProfileEmail.trim() || userProfile.email
+                    };
+                    setUserProfile(updated);
+                    try {
+                      localStorage.setItem('bhashora_user_profile', JSON.stringify(updated));
+                    } catch (e) {}
+                    setShowAuthModal(false);
+                    showToast("Login credentials updated successfully! ✨");
+                  }}
+                  className="flex-1 py-3 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 hover:from-blue-500 text-white font-bold text-xs shadow-lg shadow-indigo-600/30 transition-all cursor-pointer active:scale-95"
+                >
+                  Save Credentials
+                </button>
+                <button
+                  onClick={() => {
+                    const guest = {
+                      name: 'Guest User',
+                      email: 'guest@bhashora.ai',
+                      plan: 'Free Trial',
+                      avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&h=100&fit=crop&crop=face'
+                    };
+                    setUserProfile(guest);
+                    setEditProfileName(guest.name);
+                    setEditProfileEmail(guest.email);
+                    try {
+                      localStorage.setItem('bhashora_user_profile', JSON.stringify(guest));
+                    } catch (e) {}
+                    setShowAuthModal(false);
+                    showToast("Signed out. Switched to Guest Profile.");
+                  }}
+                  className="px-4 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs transition-colors cursor-pointer"
+                >
+                  Sign Out
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {showTranscriptModal && (
           <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
             <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 md:p-8 max-w-2xl w-full relative shadow-2xl flex flex-col max-h-[85vh]">

@@ -30,3 +30,5 @@ backend/translations.db
 Thumbs.db
 .vscode/
 .idea/
+
+.vercel
