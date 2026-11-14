@@ -227,7 +227,8 @@ export const detectTrueLanguage = (text) => {
       'హాయ్', 'హలో', 'మై', 'నేమ్', 'ఈజ్', 'ఇస్', 'ఐ', 'వాంట్', 'టు', 'గో', 'హోమ్',
       'ఆపరేట్', 'ఆన్', 'న్యూమరికల్', 'డాటా', 'డేటా', 'నాట్', 'రా', 'టెక్స్ట్', 'బికాజ్',
       'టైర్డ్', 'ప్లీజ్', 'థాంక్స్', 'థాంక్యూ', 'ఎస్', 'నో', 'వెల్కమ్', 'గుడ్', 'మార్నింగ్',
-      'ఈవెనింగ్', 'నైట్', 'వెల్', 'డన్', 'కాల్', 'మీ', 'వర్క్', 'జాబ్', 'కంప్యూటర్'
+      'ఈవెనింగ్', 'నైట్', 'వెల్', 'డన్', 'కాల్', 'మీ', 'వర్క్', 'జాబ్', 'కంప్యూటర్',
+      'లీవ్', 'లివ్', 'ఇన్', 'హైదరాబాద్', 'హియర్', 'దేర్', 'ఫ్రమ్', 'వైష్ణవి'
     ];
     const tokens = clean.split(/\s+/);
     let engCount = 0;
@@ -237,7 +238,7 @@ export const detectTrueLanguage = (text) => {
       }
     }
     // If predominantly phonetic English loanwords, the actual spoken language was English
-    if ((engCount >= 2 && engCount / tokens.length >= 0.35) || (tokens.length <= 2 && engCount >= 1)) {
+    if ((engCount >= 2 && engCount / tokens.length >= 0.25) || (tokens.length <= 4 && engCount >= 1)) {
       return 'en';
     }
     return 'te';
@@ -1352,9 +1353,24 @@ export default function App() {
     }
     isProcessingVoiceRef.current = true;
 
-    // Dynamic True Language Identification on the actual spoken utterance
-    const detectedSpokenLang = forceDetectedCode || detectTrueLanguage(spokenPhrase);
-    const detectedNameVal = forceDetectedName || LANGUAGES[detectedSpokenLang] || detectedSpokenLang;
+    let cleanSpokenText = spokenPhrase.trim();
+    let detectedSpokenLang = forceDetectedCode || detectTrueLanguage(cleanSpokenText);
+    let detectedNameVal = forceDetectedName || LANGUAGES[detectedSpokenLang] || detectedSpokenLang;
+
+    // 🛡️ CRITICAL PHONETIC RESTORATION:
+    // If user spoke English, but legacy or client ASR produced Telugu phonetics (e.g. "మై నేమ్ ఇస్ వైష్ణవి..."):
+    // Automatically translate the phonetic text back into pure English so "YOU SAID" shows clean English!
+    if (detectedSpokenLang === 'en' && /[\u0C00-\u0C7F]/.test(cleanSpokenText)) {
+      try {
+        const restored = await performRobustTranslation(cleanSpokenText, 'te', 'en');
+        if (restored && restored.translated_text && !restored.translated_text.startsWith("Translation service")) {
+          cleanSpokenText = restored.translated_text.trim();
+          console.log(`[Auto-Detect Restoration] Restored phonetic Telugu to English: "${cleanSpokenText}"`);
+        }
+      } catch (e) {
+        console.warn("Phonetic restoration notice:", e);
+      }
+    }
 
     // Read active selected target and source languages:
     const activeTarget = (targetLang !== 'auto' && targetLang) ? targetLang : (speakerTargetLang || 'mr');
@@ -1363,13 +1379,17 @@ export default function App() {
     let sLang = activeSource;
     let tLang = activeTarget;
 
-    if (sLang === tLang) {
+    // If both source and target are English, output the clean English sentence directly
+    let immediateTranslation = null;
+    if (sLang === 'en' && tLang === 'en') {
+      immediateTranslation = cleanSpokenText;
+    } else if (sLang === tLang) {
       tLang = (sLang === 'en') ? 'mr' : 'en';
     }
 
     setSpeakerState('translating');
     liveStatusRef.current = 'translating';
-    setSpeakerHeardText(spokenPhrase);
+    setSpeakerHeardText(cleanSpokenText);
     setDetectedCode(detectedSpokenLang);
     setDetectedLangName(detectedNameVal);
     // Keep inputText and interim preview empty so text box remains completely clean
@@ -1379,7 +1399,17 @@ export default function App() {
     const requestId = ++activeTranslationRequestIdRef.current;
 
     // Call our robust multi-tiered semantic translation engine
-    const res = await performRobustTranslation(spokenPhrase.trim(), sLang, tLang);
+    let res = null;
+    if (immediateTranslation) {
+      res = {
+        translated_text: immediateTranslation,
+        detected_code: 'en',
+        pronunciation: immediateTranslation,
+        engine: 'direct_language_match'
+      };
+    } else {
+      res = await performRobustTranslation(cleanSpokenText, sLang, tLang);
+    }
 
     if (activeTranslationRequestIdRef.current !== requestId) {
       return;
@@ -2569,15 +2599,15 @@ export default function App() {
                       }}
                       className="bg-transparent text-sm font-bold text-white focus:outline-none cursor-pointer w-full"
                     >
+                      <option value="auto" className="bg-slate-900 text-cyan-300 font-extrabold">🌐 Auto Detect</option>
+                      <option value="en" className="bg-slate-900 text-white">🇺🇸 English</option>
                       <option value="te" className="bg-slate-900 text-white">🇮🇳 Telugu (తెలుగు)</option>
                       <option value="hi" className="bg-slate-900 text-white">🇮🇳 Hindi (हिन्दी)</option>
-                      <option value="en" className="bg-slate-900 text-white">🇺🇸 English</option>
                       <option value="ta" className="bg-slate-900 text-white">🇮🇳 Tamil (தமிழ்)</option>
                       <option value="kn" className="bg-slate-900 text-white">🇮🇳 Kannada (ಕನ್ನಡ)</option>
-                      <option value="ml" className="bg-slate-900 text-white">🇮🇳 Malayalam (മലയാളം)</option>
+                      <option value="ml" className="bg-slate-900 text-white">🇮🇳 Malayalam (മലയാളం)</option>
                       <option value="mr" className="bg-slate-900 text-white">🇮🇳 Marathi (मराठी)</option>
                       <option value="bn" className="bg-slate-900 text-white">🇮🇳 Bengali (বাংলা)</option>
-                      <option value="auto" className="bg-slate-900 text-white">🌐 Auto Detect</option>
                     </select>
                   </div>
 
